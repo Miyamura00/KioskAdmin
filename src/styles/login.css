@@ -1,0 +1,112 @@
+/* src/styles/login.css */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+.login-bg {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #700909 0%, #d10c0c 100%);
+  font-family: 'Segoe UI', Arial, sans-serif;
+}
+
+.login-card {
+  background: white;
+  border-radius: 14px;
+  padding: 48px 40px 40px;
+  width: 100%;
+  max-width: 400px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+  text-align: center;
+}
+
+.login-badge {
+  display: inline-block;
+  background: #f3f32a;
+  color: #700909;
+  font-weight: 900;
+  font-size: 0.75rem;
+  letter-spacing: 2px;
+  padding: 4px 14px;
+  border-radius: 20px;
+  margin-bottom: 18px;
+}
+
+.login-title {
+  font-size: 1.6rem;
+  color: #700909;
+  font-weight: 900;
+  margin-bottom: 6px;
+}
+
+.login-sub {
+  color: #888;
+  font-size: 0.88rem;
+  margin-bottom: 32px;
+}
+
+.login-field {
+  text-align: left;
+  margin-bottom: 18px;
+}
+
+.login-field label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #555;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.login-field input {
+  width: 100%;
+  padding: 12px 14px;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  font-size: 1rem;
+  transition: border-color 0.2s;
+  outline: none;
+}
+
+.login-field input:focus { border-color: #d10c0c; }
+
+.login-btn {
+  width: 100%;
+  padding: 14px;
+  background: #d10c0c;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-weight: 800;
+  cursor: pointer;
+  letter-spacing: 1px;
+  margin-top: 8px;
+  transition: background 0.2s;
+}
+
+.login-btn:hover:not(:disabled) { background: #700909; }
+.login-btn:disabled { background: #ccc; cursor: not-allowed; }
+
+.login-error {
+  background: #ffe5e5;
+  color: #c0392b;
+  border: 1px solid #f5c6cb;
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 0.875rem;
+  margin-top: 14px;
+  text-align: left;
+}
+
+.login-back {
+  display: block;
+  margin-top: 20px;
+  color: #aaa;
+  font-size: 0.82rem;
+  text-decoration: none;
+}
+
+.login-back:hover { color: #700909; }
