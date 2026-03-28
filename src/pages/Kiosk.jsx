@@ -78,7 +78,7 @@ function RateTable({ label, rates, slots, roomTypes, now, schedules, cat, disabl
               <td className="cell-label">{slot}</td>
               {rts.map((_, i) => (
                 <td key={i} className={`cell-rate${!Number(prices[i]) ? ' zero' : ''}`}>
-                  {fmtVal(prices[i])}
+                  {fmtVal(prices[i])?.toString().replace(/,/g, '')}
                 </td>
               ))}
             </tr>
