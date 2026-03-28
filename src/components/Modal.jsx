@@ -1,19 +1,22 @@
 // src/components/Modal.jsx
+
+
+
 export function Modal({ show, onClose, title, children, actions, wide }) {
   if (!show) return null
   return (
     <div
       className="modal-overlay"
-      onClick={e => e.target === e.currentTarget && onClose()}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div className="modal-box" style={wide ? { maxWidth: 680 } : {}}>
         <div className="modal-header">
           <h3>{title}</h3>
-          <span className="close-btn" onClick={onClose}>&times;</span>
+          <span className="close-btn" onClick={onClose}>
+            &times;
+          </span>
         </div>
-        <div className="modal-body">
-          {children}
-        </div>
+        <div className="modal-body">{children}</div>
         {actions && <div className="modal-actions">{actions}</div>}
       </div>
     </div>

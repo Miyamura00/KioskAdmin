@@ -77,7 +77,7 @@ function RateTable({ label, rates, slots, roomTypes, now, schedules, cat }) {
               <td className="cell-label">{slot}</td>
               {rts.map((_, i) => (
                 <td key={i} className={`cell-rate${!Number(prices[i]) ? ' zero' : ''}`}>
-                  {fmtVal(prices[i])}
+                  {fmtVal(prices[i])?.toString().replace(/,/g, '')}
                 </td>
               ))}
             </tr>
@@ -152,7 +152,18 @@ export function Kiosk() {
   const timeStr = now.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true })
 
   return (
-    <div className="kiosk-root">
+    <div className="kiosk-root"
+      onClick={document.addEventListener("click", function () {
+        if (!document.fullscreenElement) {
+          // If not in fullscreen, enter fullscreen mode
+          document.documentElement.requestFullscreen().catch((err) => {
+            console.log(`Error: ${err.message}`)
+          })
+        }
+        // If already in fullscreen, do nothing
+      })}
+    >
+    
       {!loaded && (
         <div className="loading-screen">
           <div className="spinner" />

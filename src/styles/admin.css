@@ -602,3 +602,33 @@ code {
 }
 
 .divider { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+
+/* ── Arrow reorder buttons ───────────────────────────────── */
+.arr-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  background: #f9f9f9;
+  color: #555;
+  font-size: 0.6rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  line-height: 1;
+  font-family: inherit;
+}
+
+.arr-btn:hover:not(:disabled) {
+  background: #d10c0c;
+  border-color: #d10c0c;
+  color: #fff;
+}
+
+.arr-btn:disabled {
+  opacity: 0.25;
+  cursor: not-allowed;
+}

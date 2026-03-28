@@ -156,6 +156,45 @@ export function Rates() {
     activeSetTypes(updated)
   }
 
+  // ── Reorder Time Slots ──────────────────────────────────
+  async function moveSlot(cat, idx, dir) {
+    const slots = [...(activeTSlots[cat] || [])]
+    const target = idx + dir
+    if (target < 0 || target >= slots.length) return
+    // Swap in slot list
+    const tmp = slots[idx]; slots[idx] = slots[target]; slots[target] = tmp
+    const updated = { ...activeTSlots, [cat]: slots }
+    // Swap matching rate rows so prices follow the slot
+    activeSetRates(prev => {
+      const catRates = { ...(prev[cat] || {}) }
+      return { ...prev, [cat]: catRates }  // rates are keyed by name, order doesn't matter
+    })
+    await persistSlots(updated)
+  }
+
+  // ── Reorder Room Types ───────────────────────────────────
+  async function moveRoomType(idx, dir) {
+    const target = idx + dir
+    if (target < 0 || target >= activeRTypes.length) return
+    // Swap room type names
+    const newTypes = [...activeRTypes]
+    const tmp = newTypes[idx]; newTypes[idx] = newTypes[target]; newTypes[target] = tmp
+    // Swap the rate VALUE at that column index across ALL cats and slots
+    activeSetRates(prev => {
+      const next = {}
+      CATEGORIES.forEach(cat => {
+        next[cat] = {}
+        Object.keys(prev[cat] || {}).forEach(slot => {
+          const arr = [...(prev[cat][slot] || [])]
+          const tmpVal = arr[idx]; arr[idx] = arr[target]; arr[target] = tmpVal
+          next[cat][slot] = arr
+        })
+      })
+      return next
+    })
+    await persistRoomTypes(newTypes)
+  }
+
   // ── Time Slot CRUD ───────────────────────────────────────
   async function addSlot(cat) {
     const name = newSlotName.trim().toUpperCase()
@@ -495,10 +534,29 @@ export function Rates() {
           ))}
         </div>
         <table className="holiday-table">
-          <thead><tr><th>Slot Name</th><th>Schedule</th><th>Actions</th></tr></thead>
+          <thead><tr><th style={{width:32}}></th><th>Slot Name</th><th>Schedule</th><th>Actions</th></tr></thead>
           <tbody>
-            {(activeTSlots[slotCat]||[]).map(slot => (
+            {(activeTSlots[slotCat]||[]).map((slot, idx) => {
+              const total = (activeTSlots[slotCat]||[]).length
+              return (
               <tr key={slot}>
+                {/* Arrow buttons */}
+                <td style={{ padding:'2px 4px', textAlign:'center' }}>
+                  <div style={{ display:'flex', flexDirection:'column', gap:1 }}>
+                    <button
+                      className="arr-btn"
+                      disabled={idx === 0}
+                      onClick={() => moveSlot(slotCat, idx, -1)}
+                      title="Move up"
+                    >▲</button>
+                    <button
+                      className="arr-btn"
+                      disabled={idx === total - 1}
+                      onClick={() => moveSlot(slotCat, idx, 1)}
+                      title="Move down"
+                    >▼</button>
+                  </div>
+                </td>
                 <td>
                   {editSlot?.cat===slotCat && editSlot?.name===slot ? (
                     <input type="text" value={editSlotName}
@@ -511,7 +569,7 @@ export function Rates() {
                   {scheduleLabel(slotCat, slot) || <span style={{ color:'#aaa' }}>Always</span>}
                 </td>
                 <td>
-                  <div style={{ display:'flex', gap:5 }}>
+                  <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
                     {editSlot?.cat===slotCat && editSlot?.name===slot ? (
                       <>
                         <button className="btn btn-green" style={{ padding:'4px 9px', fontSize:'0.76rem' }} onClick={renameSlot}>Save</button>
@@ -530,7 +588,7 @@ export function Rates() {
                   </div>
                 </td>
               </tr>
-            ))}
+            )})}
           </tbody>
         </table>
         <div style={{ display:'flex', gap:8, marginTop:14 }}>
@@ -545,10 +603,27 @@ export function Rates() {
       {/* ── Room Types Modal ── */}
       <Modal show={roomModal} onClose={() => { setRoomModal(false); setEditRoom(null) }} title={`Manage Room Types (${mode==='walkin'?'Walk-In':'Drive-In'})`}>
         <table className="holiday-table">
-          <thead><tr><th>Room Type</th><th>Actions</th></tr></thead>
+          <thead><tr><th style={{width:32}}></th><th>Room Type</th><th>Actions</th></tr></thead>
           <tbody>
             {activeRTypes.map((rt, idx) => (
               <tr key={idx}>
+                {/* Arrow buttons */}
+                <td style={{ padding:'2px 4px', textAlign:'center' }}>
+                  <div style={{ display:'flex', flexDirection:'column', gap:1 }}>
+                    <button
+                      className="arr-btn"
+                      disabled={idx === 0}
+                      onClick={() => moveRoomType(idx, -1)}
+                      title="Move left / up"
+                    >▲</button>
+                    <button
+                      className="arr-btn"
+                      disabled={idx === activeRTypes.length - 1}
+                      onClick={() => moveRoomType(idx, 1)}
+                      title="Move right / down"
+                    >▼</button>
+                  </div>
+                </td>
                 <td>
                   {editRoom===idx ? (
                     <input type="text" value={editRoomName}

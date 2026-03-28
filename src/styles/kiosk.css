@@ -1,7 +1,15 @@
 /* src/styles/kiosk.css */
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
 
-html, body, #root {
+html,
+body,
+#root {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
@@ -10,10 +18,10 @@ html, body, #root {
 .kiosk-root {
   width: 100vw;
   height: 100vh;
-  background-color: #6b0808;
+  background-color: rgb(112, 9, 9);
   font-family: Arial, Helvetica, sans-serif;
-  border-top: 5px solid #f3d000;
-  border-bottom: 5px solid #f3d000;
+  border-top: 4px solid rgb(255, 229, 0);
+  border-bottom: 4px solid rgb(255, 229, 0);
   display: flex;
   flex-direction: column;
   position: relative;
@@ -44,7 +52,7 @@ html, body, #root {
 }
 
 .kiosk-logo {
-  height: 78px;
+  height: 120px;
   width: auto;
   object-fit: contain;
   flex-shrink: 0;
@@ -57,22 +65,22 @@ html, body, #root {
   align-items: center;
   padding: 0 20px;
 }
-
+/* banner */
 .kiosk-title {
-  font-size: 2.2vw;
-  font-weight: 900;
-  color: #7a0000;
-  letter-spacing: 3px;
+  font-size: 1.8vw;
+  font-weight: 700;
   text-align: center;
-  padding: 10px 50px;
+  padding: 20px 30px;
   background: linear-gradient(
     to right,
-    rgba(243,208,0,0)    0%,
-    rgba(243,208,0,0.9)  20%,
-    rgba(255,240,150,1)  50%,
-    rgba(243,208,0,0.9)  80%,
-    rgba(243,208,0,0)    100%
+    rgba(255, 246, 216, 0) 0%,
+    rgba(255, 223, 118, 1) 30%,
+    rgba(255, 222, 114, 1) 25%,
+    rgba(255, 246, 216, 1) 50%,
+    rgba(255, 222, 114, 1) 70%,
+    rgba(255, 246, 216, 0) 100%
   );
+  color: #800000;
   white-space: nowrap;
 }
 
@@ -94,9 +102,12 @@ html, body, #root {
 }
 
 .kiosk-border-box {
+  border: 20px solid transparent;
+  background-image: url("images/tatami-bg.png");
+  background-repeat: repeat;
+  /* ajdust design code on top */
   width: 100%;
-  border: 7px solid #b89200;
-  border-radius: 3px;
+  /* border: 7px solid #b89200; */
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -111,19 +122,19 @@ html, body, #root {
 }
 
 .rate-table th {
-  background-color: #f3f300;
-  color: #1a1a1a;
-  border: 1px solid rgba(0,0,0,0.15);
-  padding: 0 6px;
+  background-color: rgb(243, 243, 42);
+  color: black;
+  border: 1px solid whitesmoke;
+  padding: 15px;
   font-size: 1.45vw;
-  font-weight: 900;
+  font-weight: 800;
   text-align: center;
   vertical-align: middle;
-  letter-spacing: 1px;
+  /* letter-spacing: 1px; */
 }
 
 .rate-table td {
-  border: 1px solid rgba(255,255,255,0.2);
+  border: 1px solid whitesmoke;
   text-align: center;
   vertical-align: middle;
   font-size: 1.55vw;
@@ -131,17 +142,17 @@ html, body, #root {
 }
 
 .rate-table td.cell-label {
-  background-color: #f3f300;
-  color: #1a1a1a;
+  background-color: rgb(243, 243, 42);
+  color: black;
   font-size: 1.35vw;
-  font-weight: 900;
+  font-weight: 800;
   text-align: center;
   padding: 0 10px;
 }
 
 .rate-table td.cell-rate {
-  background-color: #d10c0c;
-  color: #ffffff;
+  background-color: rgb(209, 12, 12);
+  color: whitesmoke;
 }
 
 /* FOOTER */
@@ -156,13 +167,10 @@ html, body, #root {
   min-height: 64px;
 }
 
-.kiosk-footer-left {}
-
 .kiosk-datetime {
-  font-size: 2vw;
+  font-size: 1.5vw;
   font-weight: 900;
-  color: #ffffff;
-  font-style: italic;
+  color: whitesmoke;
 }
 
 .kiosk-branch-name {
@@ -200,21 +208,38 @@ html, body, #root {
   transition: all 0.2s;
   line-height: 1.1;
   text-align: center;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
   padding: 0;
 }
 
-.btn-drivein:hover  { background: #a80909; transform: scale(1.06); }
-.btn-drivein.active { background: #f3d000; color: #7a0000; border-color: #fff; }
-.btn-drivein .di-icon { font-size: 1.3vw; line-height: 1; }
-.btn-drivein .di-label { font-size: 0.65vw; font-weight: 900; }
+.btn-drivein:hover {
+  background: #a80909;
+  transform: scale(1.06);
+}
+.btn-drivein.active {
+  background: #f3d000;
+  color: #7a0000;
+  border-color: #fff;
+}
+.btn-drivein .di-icon {
+  font-size: 1.3vw;
+  line-height: 1;
+}
+.btn-drivein .di-label {
+  font-size: 0.65vw;
+  font-weight: 900;
+}
 
 /* Loading */
 .loading-screen {
-  position: fixed; inset: 0; z-index: 9999;
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
   background: #6b0808;
-  display: flex; flex-direction: column;
-  align-items: center; justify-content: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   color: #f3d000;
   font-weight: 900;
   font-family: Arial, Helvetica, sans-serif;
@@ -223,12 +248,17 @@ html, body, #root {
 }
 
 .spinner {
-  width: 56px; height: 56px;
-  border: 6px solid rgba(243,208,0,0.2);
+  width: 56px;
+  height: 56px;
+  border: 6px solid rgba(243, 208, 0, 0.2);
   border-top: 6px solid #f3d000;
   border-radius: 50%;
   animation: spin 1s linear infinite;
   margin-bottom: 20px;
 }
 
-@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
