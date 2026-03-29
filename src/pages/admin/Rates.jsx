@@ -69,6 +69,14 @@ export function Rates() {
   const [schedFrom, setSchedFrom]     = useState('')
   const [schedTo, setSchedTo]         = useState('')
 
+  // bulk adjust
+  const [bulkModal, setBulkModal]         = useState(false)
+  const [bulkCat, setBulkCat]             = useState('weekday')
+  const [bulkSlots, setBulkSlots]         = useState([])    // selected slot keys
+  const [bulkRooms, setBulkRooms]         = useState([])    // selected room type indices
+  const [bulkAmount, setBulkAmount]       = useState('')
+  const [bulkMode, setBulkMode]           = useState('add') // 'add' | 'subtract' | 'set'
+
   useEffect(() => {
     if (activeBranchId) loadRates()
     else resetState()
@@ -373,6 +381,42 @@ export function Rates() {
     } catch (err) { showToast('Error: ' + err.message, 'error') }
   }
 
+  // ── Bulk Rate Adjust ────────────────────────────────────
+  function applyBulkAdjust() {
+    const amt = parseFloat(bulkAmount)
+    if (isNaN(amt) || bulkAmount === '') { showToast('Enter a valid amount.', 'warn'); return }
+    if (bulkSlots.length === 0)          { showToast('Select at least one time slot.', 'warn'); return }
+    if (bulkRooms.length === 0)          { showToast('Select at least one room type.', 'warn'); return }
+
+    activeSetRates(prev => {
+      const next = { ...prev }
+      bulkSlots.forEach(slot => {
+        const catRates = { ...(next[bulkCat] || {}) }
+        const vals     = [...(catRates[slot] || Array(activeRTypes.length).fill(0))]
+        bulkRooms.forEach(idx => {
+          const cur = Number(vals[idx]) || 0
+          if (bulkMode === 'add')      vals[idx] = Math.max(0, cur + amt)
+          if (bulkMode === 'subtract') vals[idx] = Math.max(0, cur - amt)
+          if (bulkMode === 'set')      vals[idx] = Math.max(0, amt)
+        })
+        catRates[slot] = vals
+        next[bulkCat]  = catRates
+      })
+      return next
+    })
+    showToast(`Applied ${bulkMode === 'add' ? '+' : bulkMode === 'subtract' ? '-' : '='}${amt} to ${bulkSlots.length} slot(s) × ${bulkRooms.length} room type(s). Click Save Rates to confirm.`)
+    setBulkModal(false)
+    setBulkAmount('')
+  }
+
+  function toggleBulkSlot(key) {
+    setBulkSlots(prev => prev.includes(key) ? prev.filter(s => s !== key) : [...prev, key])
+  }
+
+  function toggleBulkRoom(idx) {
+    setBulkRooms(prev => prev.includes(idx) ? prev.filter(i => i !== idx) : [...prev, idx])
+  }
+
   // ── Excel Import ─────────────────────────────────────────
   function handleExcelImport(file) {
     if (!file) return
@@ -501,6 +545,14 @@ export function Rates() {
                 <button className="btn btn-outline" onClick={() => setRoomModal(true)}>🛏 Room Types</button>
               </>
             )}
+            <button className="btn btn-outline" onClick={() => {
+              setBulkCat('weekday')
+              setBulkSlots([])
+              setBulkRooms([])
+              setBulkAmount('')
+              setBulkMode('add')
+              setBulkModal(true)
+            }}>📈 Bulk Adjust</button>
             <button className="btn btn-outline" onClick={() => fileRef.current?.click()}>📥 Import Excel</button>
             <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display:'none' }}
               onChange={e => { if(e.target.files[0]) handleExcelImport(e.target.files[0]); e.target.value='' }} />
@@ -753,6 +805,124 @@ export function Rates() {
             style={{ flex:1 }} />
           <button className="btn btn-primary" onClick={addRoomType}>+ Add</button>
         </div>
+      </Modal>
+
+      {/* ── Bulk Adjust Modal ── */}
+      <Modal show={bulkModal} onClose={() => setBulkModal(false)}
+        title="📈 Bulk Rate Adjustment" wide
+        actions={
+          <>
+            <button className="btn btn-ghost" onClick={() => setBulkModal(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={applyBulkAdjust}>Apply Adjustment</button>
+          </>
+        }
+      >
+        <p style={{ color:'#666', fontSize:'0.83rem', marginBottom:14 }}>
+          Select the category, time slots, and room types you want to adjust — then set the amount.
+          Changes are previewed in the table. Click <strong>Save Rates</strong> to save to Firestore.
+        </p>
+
+        {/* Category tabs */}
+        <div className="form-group">
+          <label>Category</label>
+          <div style={{ display:'flex', gap:6 }}>
+            {CATEGORIES.map(cat => (
+              <button key={cat}
+                className={`btn ${bulkCat===cat?'btn-primary':'btn-outline'}`}
+                style={{ flex:1 }}
+                onClick={() => { setBulkCat(cat); setBulkSlots([]) }}>
+                {cat.toUpperCase()}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Time slot checkboxes */}
+        <div className="form-group">
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+            <label style={{ margin:0 }}>Time Slots</label>
+            <div style={{ display:'flex', gap:6 }}>
+              <button className="btn btn-ghost" style={{ fontSize:'0.74rem', padding:'2px 8px' }}
+                onClick={() => setBulkSlots([...(activeTSlots[bulkCat]||[])])}>All</button>
+              <button className="btn btn-ghost" style={{ fontSize:'0.74rem', padding:'2px 8px' }}
+                onClick={() => setBulkSlots([])}>None</button>
+            </div>
+          </div>
+          <div className="checkbox-grid" style={{ maxHeight:160 }}>
+            {(activeTSlots[bulkCat]||[]).map(slot => {
+              const isSlotDisabled = disabledSlots?.[bulkCat]?.[slot] === true
+              return (
+                <label key={slot} style={{ opacity: isSlotDisabled ? 0.4 : 1 }}>
+                  <input type="checkbox"
+                    checked={bulkSlots.includes(slot)}
+                    disabled={isSlotDisabled}
+                    onChange={() => toggleBulkSlot(slot)} />
+                  &nbsp;{displaySlotName(slot)}
+                  {slot !== displaySlotName(slot) && (
+                    <span style={{ color:'#bbb', fontSize:'0.7rem' }}> #{slot.split('_').pop()}</span>
+                  )}
+                  {isSlotDisabled && <span style={{ color:'#ccc', fontSize:'0.7rem' }}> (hidden)</span>}
+                </label>
+              )
+            })}
+            {!(activeTSlots[bulkCat]||[]).length && (
+              <span style={{ color:'#aaa', fontSize:'0.82rem', gridColumn:'1/-1' }}>No slots in this category.</span>
+            )}
+          </div>
+        </div>
+
+        {/* Room type checkboxes */}
+        <div className="form-group">
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+            <label style={{ margin:0 }}>Room Types</label>
+            <div style={{ display:'flex', gap:6 }}>
+              <button className="btn btn-ghost" style={{ fontSize:'0.74rem', padding:'2px 8px' }}
+                onClick={() => setBulkRooms(activeRTypes.map((_,i)=>i))}>All</button>
+              <button className="btn btn-ghost" style={{ fontSize:'0.74rem', padding:'2px 8px' }}
+                onClick={() => setBulkRooms([])}>None</button>
+            </div>
+          </div>
+          <div className="checkbox-grid">
+            {activeRTypes.map((rt, idx) => (
+              <label key={idx}>
+                <input type="checkbox"
+                  checked={bulkRooms.includes(idx)}
+                  onChange={() => toggleBulkRoom(idx)} />
+                &nbsp;{rt}
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {/* Adjust mode + amount */}
+        <div className="form-row">
+          <div className="form-group">
+            <label>Adjustment Type</label>
+            <select value={bulkMode} onChange={e => setBulkMode(e.target.value)}>
+              <option value="add">➕ Add to current value</option>
+              <option value="subtract">➖ Subtract from current value</option>
+              <option value="set">🟰 Set to exact value</option>
+            </select>
+          </div>
+          <div className="form-group">
+            <label>Amount (₱)</label>
+            <input type="number" min="0" placeholder="e.g. 5"
+              value={bulkAmount} onChange={e => setBulkAmount(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && applyBulkAdjust()} />
+          </div>
+        </div>
+
+        {/* Live preview */}
+        {bulkSlots.length > 0 && bulkRooms.length > 0 && bulkAmount !== '' && !isNaN(parseFloat(bulkAmount)) && (
+          <div style={{ padding:'10px 14px', background:'#e8f4fd', border:'1px solid #bee3f8', borderRadius:6, fontSize:'0.82rem', color:'#1a6fa0' }}>
+            Preview: <strong>{bulkSlots.length}</strong> slot{bulkSlots.length > 1 ? 's' : ''} ×{' '}
+            <strong>{bulkRooms.length}</strong> room type{bulkRooms.length > 1 ? 's' : ''} will be{' '}
+            {bulkMode === 'add'      && `increased by ₱${parseFloat(bulkAmount).toLocaleString()}`}
+            {bulkMode === 'subtract' && `decreased by ₱${parseFloat(bulkAmount).toLocaleString()}`}
+            {bulkMode === 'set'      && `set to ₱${parseFloat(bulkAmount).toLocaleString()}`}
+            . Remember to <strong>Save Rates</strong> after.
+          </div>
+        )}
       </Modal>
 
       {/* ── Schedule Modal ── */}
