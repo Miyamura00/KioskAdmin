@@ -199,39 +199,71 @@ export function Rates() {
 
   // ── Time Slot CRUD ───────────────────────────────────────
   async function addSlot(cat) {
-    const name = newSlotName.trim().toUpperCase()
-    if (!name) { showToast('Enter a slot name.','warn'); return }
-    if ((activeTSlots[cat]||[]).includes(name)) { showToast('Slot already exists.','warn'); return }
-    const updated = { ...activeTSlots, [cat]: [...(activeTSlots[cat]||[]), name] }
+    const label = newSlotName.trim().toUpperCase()
+    if (!label) { showToast('Enter a slot name.','warn'); return }
+
+    // Generate a unique internal key — allows duplicate display names.
+    // "24HRS" already exists → try "24HRS_2", "24HRS_3", etc.
+    const existing = activeTSlots[cat] || []
+    let key = label
+    if (existing.includes(key)) {
+      let n = 2
+      while (existing.includes(`${label}_${n}`)) n++
+      key = `${label}_${n}`
+    }
+
+    const updated = { ...activeTSlots, [cat]: [...existing, key] }
     activeSetRates(prev => ({
-      ...prev, [cat]: { ...(prev[cat]||{}), [name]: Array(activeRTypes.length).fill(0) }
+      ...prev, [cat]: { ...(prev[cat]||{}), [key]: Array(activeRTypes.length).fill(0) }
     }))
     await persistSlots(updated)
-    await logAction('ADD_SLOT', `Added slot "${name}" to ${cat} (${mode})`, activeBranchId, branchName)
+    await logAction('ADD_SLOT', `Added slot "${label}" to ${cat} (${mode})`, activeBranchId, branchName)
     setNewSlotName('')
-    showToast(`"${name}" added!`)
+    const isDup = key !== label
+    showToast(`"${label}" added!${isDup ? ' (duplicate — set a schedule to distinguish)' : ''}`)
   }
 
   async function renameSlot() {
-    const { cat, name: oldName } = editSlot
-    const newName = editSlotName.trim().toUpperCase()
-    if (!newName) { showToast('Enter a name.','warn'); return }
-    const updated = { ...activeTSlots, [cat]: activeTSlots[cat].map(s => s===oldName ? newName : s) }
+    const { cat, name: oldKey } = editSlot
+    const newLabel = editSlotName.trim().toUpperCase()
+    if (!newLabel) { showToast('Enter a name.','warn'); return }
+
+    // Build unique new key from label (preserve position, allow duplicates)
+    const others = (activeTSlots[cat] || []).filter(s => s !== oldKey)
+    let newKey = newLabel
+    if (others.includes(newKey)) {
+      let n = 2
+      while (others.includes(`${newLabel}_${n}`)) n++
+      newKey = `${newLabel}_${n}`
+    }
+
+    const updated = { ...activeTSlots, [cat]: activeTSlots[cat].map(s => s === oldKey ? newKey : s) }
+
+    // Move rates to new key
     activeSetRates(prev => {
-      const c = { ...(prev[cat]||{}) }
-      if (c[oldName] !== undefined) { c[newName] = c[oldName]; delete c[oldName] }
-      return { ...prev, [cat]: c }
+      const cr = { ...(prev[cat]||{}) }
+      if (cr[oldKey] !== undefined) { cr[newKey] = cr[oldKey]; delete cr[oldKey] }
+      return { ...prev, [cat]: cr }
     })
-    // rename in schedules too
+
+    // Move schedule to new key
     setRateSchedules(prev => {
       const ns = { ...(prev[cat]||{}) }
-      if (ns[oldName]) { ns[newName] = ns[oldName]; delete ns[oldName] }
+      if (ns[oldKey]) { ns[newKey] = ns[oldKey]; delete ns[oldKey] }
       return { ...prev, [cat]: ns }
     })
+
+    // Move disabledSlots to new key
+    setDisabledSlots(prev => {
+      const nd = { ...(prev[cat]||{}) }
+      if (nd[oldKey] !== undefined) { nd[newKey] = nd[oldKey]; delete nd[oldKey] }
+      return { ...prev, [cat]: nd }
+    })
+
     await persistSlots(updated)
-    await logAction('RENAME_SLOT', `Renamed slot "${oldName}" → "${newName}" in ${cat} (${mode})`, activeBranchId, branchName)
+    await logAction('RENAME_SLOT', `Renamed slot "${oldKey}" → "${newKey}" in ${cat} (${mode})`, activeBranchId, branchName)
     setEditSlot(null)
-    showToast(`Renamed to "${newName}"!`)
+    showToast(`Renamed to "${newLabel}"!`)
   }
 
   async function deleteSlot(cat, slotName) {
@@ -444,6 +476,11 @@ export function Rates() {
     <div className="page"><div className="card"><p className="hint">Loading rates…</p></div></div>
   )
 
+  // Strip internal duplicate suffix: "24HRS_2" → "24HRS", "24HRS" → "24HRS"
+  function displaySlotName(key) {
+    return key.replace(/_\d+$/, '')
+  }
+
   const scheduleLabel = (cat, slot) => {
     const sch = rateSchedules?.[cat]?.[slot]
     if (!sch?.from) return null
@@ -515,8 +552,11 @@ export function Rates() {
                       <tr key={slot} style={isDisabled ? { opacity:0.45, background:'#f8f8f8' } : {}}>
                         <td style={{ fontWeight:700, background: isDisabled ? '#f0f0f0' : '#f9f9f9', paddingLeft:12 }}>
                           <span style={{ textDecoration: isDisabled ? 'line-through' : 'none', color: isDisabled ? '#aaa' : undefined }}>
-                            {slot}
+                            {displaySlotName(slot)}
                           </span>
+                          {slot !== displaySlotName(slot) && !isDisabled && (
+                            <span style={{ marginLeft:5, fontSize:'0.65rem', color:'#bbb', fontStyle:'italic' }}>#{slot.split('_').pop()}</span>
+                          )}
                           {isDisabled && (
                             <span style={{
                               marginLeft:6, fontSize:'0.68rem', fontWeight:800,
@@ -598,8 +638,16 @@ export function Rates() {
                     <input type="text" value={editSlotName}
                       onChange={e => setEditSlotName(e.target.value)}
                       onKeyDown={e => e.key==='Enter' && renameSlot()}
-                      style={{ width:160 }} />
-                  ) : <strong>{slot}</strong>}
+                      style={{ width:160 }}
+                      placeholder="Display name" />
+                  ) : (
+                    <span>
+                      <strong>{displaySlotName(slot)}</strong>
+                      {slot !== displaySlotName(slot) && (
+                        <span style={{ marginLeft:6, fontSize:'0.7rem', color:'#aaa', fontStyle:'italic' }}>copy #{slot.split('_').pop()}</span>
+                      )}
+                    </span>
+                  )}
                 </td>
                 <td style={{ fontSize:'0.8rem', color:'#2980b9' }}>
                   {scheduleLabel(slotCat, slot) || <span style={{ color:'#aaa' }}>Always</span>}

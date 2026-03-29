@@ -47,6 +47,11 @@ function getCategory(now, settings, holidays, branchId) {
   return 'weekday'
 }
 
+// Strip internal duplicate suffix: "24HRS_2" → "24HRS"
+function displaySlotName(key) {
+  return key.replace(/_\d+$/, '')
+}
+
 function fmtVal(v) {
   const n = Number(v)
   return (!n) ? '-' : n.toLocaleString()
@@ -75,10 +80,10 @@ function RateTable({ label, rates, slots, roomTypes, now, schedules, cat, disabl
           const prices = rates?.[slot] || Array(rts.length).fill(0)
           return (
             <tr key={slot}>
-              <td className="cell-label">{slot}</td>
+              <td className="cell-label">{displaySlotName(slot)}</td>
               {rts.map((_, i) => (
                 <td key={i} className={`cell-rate${!Number(prices[i]) ? ' zero' : ''}`}>
-                  {fmtVal(prices[i])?.toString().replace(/,/g, '')}
+                  {fmtVal(prices[i])}
                 </td>
               ))}
             </tr>
@@ -148,15 +153,7 @@ export function Kiosk() {
   const timeStr = now.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true})
 
   return (
-    <div className="kiosk-root"onClick={document.addEventListener("click", function () {
-        if (!document.fullscreenElement) {
-          // If not in fullscreen, enter fullscreen mode
-          document.documentElement.requestFullscreen().catch((err) => {
-            console.log(`Error: ${err.message}`)
-          })
-        }
-        // If already in fullscreen, do nothing
-      })}>
+    <div className="kiosk-root">
       {!loaded && (
         <div className="loading-screen">
           <div className="spinner" />
