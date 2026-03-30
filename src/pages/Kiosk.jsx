@@ -54,7 +54,7 @@ function displaySlotName(key) {
 
 function fmtVal(v) {
   const n = Number(v)
-  return (!n) ? '-' : n.toString()
+  return (!n) ? '-' : n.toLocaleString()
 }
 
 function RateTable({ label, rates, slots, roomTypes, now, schedules, cat, disabledSlots }) {
@@ -66,13 +66,37 @@ function RateTable({ label, rates, slots, roomTypes, now, schedules, cat, disabl
       No rates configured for this period.
     </div>
   )
-  const rts = roomTypes || DEFAULT_ROOM_TYPES
+
+  const rts      = roomTypes || DEFAULT_ROOM_TYPES
+  const rowCount = active.length
+  const colCount = rts.length + 1          // +1 for label column
+
+  // ── Dynamic scaling ──────────────────────────────────────
+  // Font shrinks as more columns / rows are added so everything fits on screen.
+  // Base is calibrated for 4 room types + 6 rows (the default layout).
+  const colScale = Math.max(0.55, 1 - (colCount - 5) * 0.07)  // shrinks per extra col
+  const rowScale = Math.max(0.70, 1 - (rowCount - 6) * 0.05)  // shrinks per extra row
+  const scale    = Math.min(colScale, rowScale)
+
+  const thFontSize  = `${(1.4  * scale).toFixed(2)}vw`
+  const tdFontSize  = `${(1.55 * scale).toFixed(2)}vw`
+  const lblFontSize = `${(1.3  * scale).toFixed(2)}vw`
+
+  // Label column is narrower when there are many room types
+  const labelPct = Math.max(14, 22 - (colCount - 5) * 1.5) + '%'
+
   return (
     <table className="rate-table">
       <thead>
         <tr>
-          <th className="col-label" style={{ width:'22%' }}>{label}</th>
-          {rts.map(rt => <th key={rt}>{rt.toUpperCase()}</th>)}
+          <th className="col-label" style={{ width: labelPct, fontSize: thFontSize }}>
+            {label}
+          </th>
+          {rts.map(rt => (
+            <th key={rt} style={{ fontSize: thFontSize }}>
+              {rt.toUpperCase()}
+            </th>
+          ))}
         </tr>
       </thead>
       <tbody>
@@ -80,9 +104,12 @@ function RateTable({ label, rates, slots, roomTypes, now, schedules, cat, disabl
           const prices = rates?.[slot] || Array(rts.length).fill(0)
           return (
             <tr key={slot}>
-              <td className="cell-label">{displaySlotName(slot)}</td>
+              <td className="cell-label" style={{ fontSize: lblFontSize }}>
+                {displaySlotName(slot)}
+              </td>
               {rts.map((_, i) => (
-                <td key={i} className={`cell-rate${!Number(prices[i]) ? ' zero' : ''}`}>
+                <td key={i} className={`cell-rate${!Number(prices[i]) ? ' zero' : ''}`}
+                  style={{ fontSize: tdFontSize }}>
                   {fmtVal(prices[i])}
                 </td>
               ))}

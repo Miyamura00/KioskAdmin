@@ -1,15 +1,7 @@
 /* src/styles/kiosk.css */
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-html,
-body,
-#root {
+html, body, #root {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
@@ -18,10 +10,10 @@ body,
 .kiosk-root {
   width: 100vw;
   height: 100vh;
-  background-color: rgb(112, 9, 9);
+  background-color: #6b0808;
   font-family: Arial, Helvetica, sans-serif;
-  border-top: 4px solid rgb(255, 229, 0);
-  border-bottom: 4px solid rgb(255, 229, 0);
+  border-top: 5px solid #f3d000;
+  border-bottom: 5px solid #f3d000;
   display: flex;
   flex-direction: column;
   position: relative;
@@ -30,16 +22,14 @@ body,
 
 .bg-swirl {
   position: absolute;
-  right: 0;
-  top: 0;
-  height: 100%;
-  width: auto;
+  right: 0; top: 0;
+  height: 100%; width: auto;
   z-index: 0;
   pointer-events: none;
   opacity: 0.9;
 }
 
-/* HEADER */
+/* ── HEADER ────────────────────────────────────────────── */
 .kiosk-header {
   display: flex;
   align-items: center;
@@ -48,11 +38,11 @@ body,
   position: relative;
   z-index: 2;
   flex-shrink: 0;
-  min-height: 90px;
+  min-height: 80px;     /* slightly smaller so table gets more room */
 }
 
 .kiosk-logo {
-  height: 120px;
+  height: 72px;
   width: auto;
   object-fit: contain;
   flex-shrink: 0;
@@ -63,118 +53,133 @@ body,
   display: flex;
   justify-content: center;
   align-items: center;
-  padding: 0 20px;
+  padding: 0 14px;
 }
-/* banner */
+
 .kiosk-title {
-  font-size: 1.8vw;
-  font-weight: 700;
+  font-size: 2.1vw;
+  font-weight: 900;
+  color: #7a0000;
+  letter-spacing: 3px;
   text-align: center;
-  padding: 20px 30px;
+  padding: 8px 40px;
+  white-space: nowrap;
   background: linear-gradient(
     to right,
-    rgba(255, 246, 216, 0) 0%,
-    rgba(255, 223, 118, 1) 30%,
-    rgba(255, 222, 114, 1) 25%,
-    rgba(255, 246, 216, 1) 50%,
-    rgba(255, 222, 114, 1) 70%,
-    rgba(255, 246, 216, 0) 100%
+    rgba(243,208,0,0)    0%,
+    rgba(243,208,0,0.9)  20%,
+    rgba(255,240,150,1)  50%,
+    rgba(243,208,0,0.9)  80%,
+    rgba(243,208,0,0)    100%
   );
-  color: #800000;
-  white-space: nowrap;
 }
 
 .kiosk-header-right {
-  width: 100px;
+  width: 90px;
   flex-shrink: 0;
 }
 
-/* TABLE AREA */
+/* ── TABLE AREA ─────────────────────────────────────────── */
 .kiosk-table-wrap {
   flex: 1;
   display: flex;
   align-items: stretch;
-  padding: 4px 70px 4px 16px;
+  /* Right padding leaves room for the decorative bg swirl */
+  padding: 2px 72px 2px 14px;
   position: relative;
   z-index: 2;
   overflow: hidden;
-  min-height: 0;
+  min-height: 0;      /* critical — lets flex child shrink */
 }
 
 .kiosk-border-box {
-  border: 20px solid transparent;
-  background-image: url("../pages/tatami-bg.png");
-  background-repeat: repeat;
-  /* ajdust design code on top */
   width: 100%;
-  /* border: 7px solid #b89200; */
-  overflow: hidden;
+  border: 6px solid #b89200;
+  border-radius: 3px;
+  overflow: hidden;         /* clips table — no scrollbar ever shown */
   display: flex;
   flex-direction: column;
 }
 
+/* ── Rate table ─────────────────────────────────────────── */
 .rate-table {
   width: 100%;
   height: 100%;
   border-collapse: collapse;
-  table-layout: fixed;
+  /* "auto" lets browser distribute columns evenly — responsive to column count */
+  table-layout: auto;
   font-weight: 800;
 }
 
 .rate-table th {
-  background-color: rgb(243, 243, 42);
-  color: black;
-  border: 1px solid whitesmoke;
-  padding: 15px;
-  font-size: 1.45vw;
-  font-weight: 800;
+  background-color: #f3f300;
+  color: #1a1a1a;
+  border: 1px solid rgba(0,0,0,0.15);
+  /* padding scales with viewport — keeps text from touching edges */
+  padding: 0 0.4vw;
+  /* font-size is set inline by JS based on column/row count */
+  font-weight: 900;
   text-align: center;
   vertical-align: middle;
-  /* letter-spacing: 1px; */
+  letter-spacing: 0.5px;
+  /* allow header text to wrap for very long room type names */
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .rate-table td {
-  border: 1px solid whitesmoke;
+  border: 1px solid rgba(255,255,255,0.2);
   text-align: center;
   vertical-align: middle;
-  font-size: 1.55vw;
+  /* font-size set inline by JS */
   font-weight: 900;
+  /* no fixed height — rows fill the available space equally via height:100% on table */
+  padding: 0 0.3vw;
 }
 
 .rate-table td.cell-label {
-  background-color: rgb(243, 243, 42);
-  color: black;
-  font-size: 1.35vw;
-  font-weight: 800;
+  background-color: #f3f300;
+  color: #1a1a1a;
+  font-weight: 900;
   text-align: center;
-  padding: 0 10px;
+  padding: 0 0.6vw;
+  /* wrap long slot names (e.g. "10HRS ONP") on narrow columns */
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .rate-table td.cell-rate {
-  background-color: rgb(209, 12, 12);
-  color: whitesmoke;
+  background-color: #d10c0c;
+  color: #ffffff;
 }
 
-/* FOOTER */
+.rate-table td.cell-rate.zero {
+  color: rgba(255,255,255,0.55);
+}
+
+/* ── FOOTER ─────────────────────────────────────────────── */
 .kiosk-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 16px 8px 16px;
+  padding: 4px 16px 6px 16px;
   position: relative;
   z-index: 2;
   flex-shrink: 0;
-  min-height: 64px;
+  min-height: 58px;
 }
 
+.kiosk-footer-left {}
+
 .kiosk-datetime {
-  font-size: 1.5vw;
+  font-size: 1.9vw;
   font-weight: 900;
-  color: whitesmoke;
+  color: #ffffff;
+  font-style: italic;
 }
 
 .kiosk-branch-name {
-  font-size: 0.9vw;
+  font-size: 0.85vw;
   color: rgba(255, 229, 0, 0.75);
   font-weight: 700;
   letter-spacing: 2px;
@@ -188,15 +193,16 @@ body,
   gap: 10px;
 }
 
+/* ── Drive-In toggle button ─────────────────────────────── */
 .btn-drivein {
-  width: 68px;
-  height: 68px;
+  width: 64px;
+  height: 64px;
   border-radius: 50%;
   background: #d10c0c;
   border: 3px solid #f3d000;
   color: #fff;
   font-weight: 900;
-  font-size: 0.65vw;
+  font-size: 0.62vw;
   cursor: pointer;
   display: flex;
   flex-direction: column;
@@ -206,40 +212,22 @@ body,
   text-transform: uppercase;
   letter-spacing: 0.5px;
   transition: all 0.2s;
-  line-height: 1.1;
+  line-height: 1.15;
   text-align: center;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
   padding: 0;
 }
 
-.btn-drivein:hover {
-  background: #a80909;
-  transform: scale(1.06);
-}
-.btn-drivein.active {
-  background: #f3d000;
-  color: #7a0000;
-  border-color: #fff;
-}
-.btn-drivein .di-icon {
-  font-size: 1.3vw;
-  line-height: 1;
-}
-.btn-drivein .di-label {
-  font-size: 0.65vw;
-  font-weight: 900;
-}
+.btn-drivein:hover         { background: #a80909; transform: scale(1.06); }
+.btn-drivein .di-icon      { font-size: 1.25vw; line-height: 1; }
+.btn-drivein .di-label     { font-size: 0.62vw; font-weight: 900; }
 
-/* Loading */
+/* ── Loading screen ─────────────────────────────────────── */
 .loading-screen {
-  position: fixed;
-  inset: 0;
-  z-index: 9999;
+  position: fixed; inset: 0; z-index: 9999;
   background: #6b0808;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
   color: #f3d000;
   font-weight: 900;
   font-family: Arial, Helvetica, sans-serif;
@@ -248,17 +236,12 @@ body,
 }
 
 .spinner {
-  width: 56px;
-  height: 56px;
-  border: 6px solid rgba(243, 208, 0, 0.2);
+  width: 56px; height: 56px;
+  border: 6px solid rgba(243,208,0,0.2);
   border-top: 6px solid #f3d000;
   border-radius: 50%;
   animation: spin 1s linear infinite;
   margin-bottom: 20px;
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
+@keyframes spin { to { transform: rotate(360deg); } }
