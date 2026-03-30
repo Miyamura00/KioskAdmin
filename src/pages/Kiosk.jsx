@@ -54,7 +54,7 @@ function displaySlotName(key) {
 
 function fmtVal(v) {
   const n = Number(v)
-  return (!n) ? '-' : n.toLocaleString()
+  return (!n) ? '-' : n.toString()
 }
 
 function RateTable({ label, rates, slots, roomTypes, now, schedules, cat, disabledSlots }) {

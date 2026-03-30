@@ -92,11 +92,15 @@ html, body, #root {
   min-height: 0;      /* critical — lets flex child shrink */
 }
 
+
 .kiosk-border-box {
+  border: 20px solid transparent;
+  background-image: url("../pages/tatami-bg.png");
+  background-repeat: repeat;
+  /* ajdust design code on top */
   width: 100%;
-  border: 6px solid #b89200;
-  border-radius: 3px;
-  overflow: hidden;         /* clips table — no scrollbar ever shown */
+  /* border: 7px solid #b89200; */
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -169,7 +173,7 @@ html, body, #root {
   min-height: 58px;
 }
 
-.kiosk-footer-left {}
+
 
 .kiosk-datetime {
   font-size: 1.9vw;
