@@ -1,22 +1,25 @@
 // src/pages/Login.jsx
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { auth, db }    from '../firebase/config'
 import { useAuth }     from '../context/AuthContext'
 import '../styles/login.css'
 
 export function Login() {
-  const navigate = useNavigate()
+  const navigate    = useNavigate()
   const { disabledError, clearDisabledError } = useAuth()
 
-  const [email,       setEmail]       = useState('')
-  const [password,    setPassword]    = useState('')
-  const [error,       setError]       = useState('')
-  const [loading,     setLoading]     = useState(false)
-  const [checkingAuth, setCheckingAuth] = useState(true) // NEW: waiting for Firebase session check
-  const [showPw,      setShowPw]      = useState(false)
+  const [email,        setEmail]        = useState('')
+  const [password,     setPassword]     = useState('')
+  const [error,        setError]        = useState('')
+  const [loading,      setLoading]      = useState(false)
+  const [checkingAuth, setCheckingAuth] = useState(true)
+  const [showPw,       setShowPw]       = useState(false)
 
-  // Show disabled message passed from AuthContext
+  // Guard: only ONE navigation ever fires — prevents the throttle loop
+  const hasNavigated = useRef(false)
+
+  // Show disabled-account message from AuthContext
   useEffect(() => {
     if (disabledError) {
       setError('⛔ Your account has been disabled. Please contact your administrator.')
@@ -24,61 +27,91 @@ export function Login() {
     }
   }, [disabledError])
 
-  // Check existing session — if already logged in, go straight to admin
-  // Show loading spinner while Firebase resolves the auth state
+  // ── Single auth-state listener ────────────────────────────
+  // This is the ONLY place that calls navigate('/admin').
+  // The login handler just signs in — this listener does the redirect.
   useEffect(() => {
     const unsub = auth.onAuthStateChanged(user => {
       if (user) {
-        navigate('/admin', { replace: true })
+        if (!hasNavigated.current) {
+          hasNavigated.current = true
+          navigate('/admin', { replace: true })
+        }
       } else {
-        setCheckingAuth(false)  // no session — show the login form
+        setCheckingAuth(false)
+        setLoading(false)
       }
     })
     return unsub
   }, [navigate])
 
+  // ── Login handler ─────────────────────────────────────────
   async function handleLogin(e) {
     e?.preventDefault()
-    if (!email || !password) { setError('Please enter your email and password.'); return }
-    setLoading(true); setError('')
+    if (!email.trim() || !password) {
+      setError('Please enter your email and password.')
+      return
+    }
+    setLoading(true)
+    setError('')
 
     try {
-      const cred = await auth.signInWithEmailAndPassword(email, password)
-      const snap = await db.collection('users').doc(cred.user.uid).get()
+      const cred = await auth.signInWithEmailAndPassword(email.trim(), password)
 
-      if (!snap.exists) {
+      // Check Firestore profile — handle offline gracefully
+      let profile = null
+      try {
+        // Try server first (throws if client is offline)
+        const snap = await db.collection('users').doc(cred.user.uid)
+          .get({ source: 'server' })
+        profile = snap.exists ? snap.data() : null
+      } catch (_offlineErr) {
+        // Fallback to cache if offline
+        try {
+          const snap = await db.collection('users').doc(cred.user.uid).get()
+          profile = snap.exists ? snap.data() : null
+        } catch (_cacheErr) {
+          // Neither available — let user through; AuthContext validates on next load
+          profile = { role: 'user' }
+        }
+      }
+
+      if (!profile) {
         await auth.signOut()
+        hasNavigated.current = false
         setError('Account not found in the system. Contact your administrator.')
         setLoading(false)
         return
       }
 
-      const profile = snap.data()
       if (profile.disabled === true) {
         await auth.signOut()
-        setError('⛔ Your account has been disabled. Please contact your administrator.')
+        hasNavigated.current = false
+        setError('⛔ Your account has been disabled. Contact your administrator.')
         setLoading(false)
         return
       }
 
-      // onAuthStateChanged will fire and navigate — show spinner until then
-      // setLoading stays true so the spinner keeps showing
+      // Auth succeeded — onAuthStateChanged fires and navigates.
+      // Keep spinner showing until navigation happens.
+
     } catch (err) {
+      hasNavigated.current = false
+      setLoading(false)
       const friendly = {
-        'auth/user-not-found':        '❌ No account found with that email address.',
-        'auth/wrong-password':        '❌ Incorrect password. Please try again.',
-        'auth/invalid-email':         '❌ Please enter a valid email address.',
-        'auth/too-many-requests':     '⚠️ Too many failed attempts. Try again later.',
-        'auth/invalid-credential':    '❌ Incorrect email or password.',
-        'auth/user-disabled':         '⛔ Your account has been disabled. Contact your administrator.',
-        'auth/network-request-failed':'⚠️ Network error. Check your connection and try again.',
+        'auth/user-not-found':         '❌ No account found with that email.',
+        'auth/wrong-password':         '❌ Incorrect password. Please try again.',
+        'auth/invalid-email':          '❌ Invalid email address.',
+        'auth/too-many-requests':      '⚠️ Too many failed attempts. Try again later.',
+        'auth/invalid-credential':     '❌ Incorrect email or password.',
+        'auth/user-disabled':          '⛔ Your account has been disabled.',
+        'auth/network-request-failed': '⚠️ No internet connection. Check your network.',
       }
       setError(friendly[err.code] || 'Error: ' + err.message)
-      setLoading(false)
     }
   }
 
-  // ── Full-screen loading spinner (checking existing session) ───────────────
+  // ── Full-screen loading spinner ───────────────────────────
   if (checkingAuth || loading) {
     return (
       <div style={{
@@ -88,7 +121,6 @@ export function Login() {
         alignItems: 'center', justifyContent: 'center',
         gap: 20, zIndex: 9999,
       }}>
-        {/* Spinning ring */}
         <div style={{
           width: 56, height: 56,
           border: '5px solid rgba(243,243,42,0.25)',
@@ -148,8 +180,9 @@ export function Login() {
                 style={{
                   position: 'absolute', right: 12, top: '50%',
                   transform: 'translateY(-50%)',
-                  background: 'none', border: 'none', cursor: 'pointer',
-                  color: '#888', fontSize: '1rem', padding: 0, lineHeight: 1,
+                  background: 'none', border: 'none',
+                  cursor: 'pointer', color: '#888',
+                  fontSize: '1rem', padding: 0, lineHeight: 1,
                 }}
               >
                 {showPw ? '🙈' : '👁'}
