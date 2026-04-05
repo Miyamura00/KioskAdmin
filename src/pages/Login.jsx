@@ -206,8 +206,6 @@ export function Login() {
             SIGN IN
           </button>
         </form>
-
-        <a href="/kiosk" className="login-back">← Back to Kiosk</a>
       </div>
     </div>
   )
