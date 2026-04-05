@@ -9,6 +9,8 @@ import { Toast }     from '../../components/Toast'
 import { useToast }  from '../../hooks/useToast'
 import { useAudit }  from '../../hooks/useAudit'
 import * as XLSX     from 'xlsx'
+import { RateHistory }     from './RateHistory'
+import { ScheduledRates }  from './ScheduledRates'
 
 const CATEGORIES = ['weekday','weekend','holiday']
 const CAT_COLORS = { weekday:'#444', weekend:'#1a5276', holiday:'#700909' }
@@ -49,6 +51,12 @@ export function Rates() {
   const [loading, setLoading]             = useState(false)
   const [saving, setSaving]               = useState(false)
   const branchName = allBranches.find(b => b.id === activeBranchId)?.name || activeBranchId
+
+  // Called by RateHistory and ScheduledRates when rates change externally
+  function handleExternalRatesUpdate(newRates) {
+    if (mode === 'walkin') setRates(newRates)
+    else setDiRates(newRates)
+  }
 
   // slot management modal
   const [slotModal, setSlotModal]     = useState(false)
@@ -421,29 +429,80 @@ export function Rates() {
   function handleExcelImport(file) {
     if (!file) return
     const reader = new FileReader()
-    reader.onload = e => {
+    reader.onload = async e => {
       try {
         const data = new Uint8Array(e.target.result)
         const wb   = XLSX.read(data, { type:'array' })
-        const sheet = wb.Sheets[wb.SheetNames[0]]
-        const rows  = XLSX.utils.sheet_to_json(sheet, { header:1, defval:'' })
+
+        // ── Import current rates (first sheet) ──────────────
+        const sheet  = wb.Sheets[wb.SheetNames[0]]
+        const rows   = XLSX.utils.sheet_to_json(sheet, { header:1, defval:'' })
         const parsed = parseExcel(rows)
-        if (!parsed) { showToast('Could not parse file. Use the exported format.','error'); return }
-        let filled = 0
-        CATEGORIES.forEach(cat => {
-          if (!parsed[cat]) return
-          Object.keys(parsed[cat]).forEach(slot => {
-            if ((activeTSlots[cat]||[]).includes(slot)) {
-              activeSetRates(prev => {
-                const c = { ...(prev[cat]||{}) }
-                c[slot] = parsed[cat][slot]
-                filled++
-                return { ...prev, [cat]: c }
-              })
-            }
+        if (parsed) {
+          CATEGORIES.forEach(cat => {
+            if (!parsed[cat]) return
+            Object.keys(parsed[cat]).forEach(slot => {
+              if ((activeTSlots[cat]||[]).includes(slot)) {
+                activeSetRates(prev => {
+                  const c = { ...(prev[cat]||{}) }
+                  c[slot] = parsed[cat][slot]
+                  return { ...prev, [cat]: c }
+                })
+              }
+            })
           })
-        })
-        showToast(`Imported rates. Review and click Save.`)
+          showToast('Rates imported. Review and click Save.')
+        }
+
+        // ── Import scheduled changes sheet ──────────────────
+        const schedSheet = wb.Sheets['Scheduled Changes']
+        if (schedSheet && activeBranchId) {
+          const schedRows = XLSX.utils.sheet_to_json(schedSheet, { header:1, defval:'' })
+          // Find header row (has 'Label' in first cell)
+          const headerIdx = schedRows.findIndex(r => String(r[0]).toLowerCase() === 'label')
+          if (headerIdx >= 0) {
+            let imported = 0
+            for (let i = headerIdx + 1; i < schedRows.length; i++) {
+              const row = schedRows[i]
+              const lbl  = String(row[0] || '').trim()
+              const date = String(row[1] || '').trim()
+              const time = String(row[2] || '06:00').trim()
+              const type = String(row[3] || 'increase').trim()
+              const amt  = parseFloat(row[4]) || 0
+              const sts  = String(row[7] || '').trim()
+              if (!lbl || !date || !amt || sts === 'applied' || sts === 'cancelled') continue
+              const applyAt = new Date(date + 'T' + time).toISOString()
+              // Build newRates from current activeRates using the adjustment
+              const newRates = {}
+              CATEGORIES.forEach(cat => {
+                newRates[cat] = {}
+                Object.keys(activeRates[cat] || {}).forEach(slot => {
+                  const vals = [...(activeRates[cat][slot] || Array(activeRTypes.length).fill(0))]
+                  vals.forEach((v, idx) => {
+                    const cur = Number(v) || 0
+                    if (type === 'increase') vals[idx] = Math.max(0, cur + amt)
+                    else if (type === 'decrease') vals[idx] = Math.max(0, cur - amt)
+                    else vals[idx] = Math.max(0, amt)
+                  })
+                  newRates[cat][slot] = vals
+                })
+              })
+              await db.collection('branches').doc(activeBranchId).collection('scheduledRates').add({
+                label: lbl, applyAt, adjType: type, adjAmount: amt,
+                adjSlots: [], adjRooms: [], newRates, mode, status: 'pending',
+                createdAt:    firebase.firestore.FieldValue.serverTimestamp(),
+                createdBy:    currentUser.email,
+                createdByName: userProfile?.displayName || currentUser.email,
+              })
+              imported++
+            }
+            if (imported > 0) {
+              await logAction('IMPORT_SCHEDULED_RATES', `Imported ${imported} scheduled rate change(s) from Excel`, activeBranchId, branchName)
+              showToast(`Also imported ${imported} scheduled change(s)!`)
+            }
+          }
+        }
+
       } catch (err) { showToast('Import error: ' + err.message,'error') }
     }
     reader.readAsArrayBuffer(file)
@@ -507,8 +566,37 @@ export function Rates() {
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(histRows), sheetName)
       })
 
+      // Extra sheet: Scheduled Rate Changes template
+      const schedSnap = await db.collection('branches').doc(activeBranchId)
+        .collection('scheduledRates')
+        .where('mode','==',mode)
+        .where('status','==','pending')
+        .get()
+      const schedRows = [
+        ['SCHEDULED RATE CHANGES — ' + (bData?.name || activeBranchId)],
+        ['Mode: ' + mode],
+        [],
+        ['Label','Apply Date (YYYY-MM-DD)','Apply Time (HH:MM)','Type (increase/decrease/set)','Amount (₱)','Affected Slots (blank=all)','Affected Rooms (blank=all)','Status'],
+        ...schedSnap.docs.map(d => {
+          const e = d.data()
+          return [
+            e.label || '',
+            e.applyAt ? e.applyAt.slice(0,10) : '',
+            e.applyAt ? e.applyAt.slice(11,16) : '',
+            e.adjType || 'increase',
+            e.adjAmount || 0,
+            (e.adjSlots||[]).join('; '),
+            (e.adjRooms||[]).join('; '),
+            e.status || 'pending',
+          ]
+        }),
+        [],
+        ['--- TO IMPORT A NEW SCHEDULED CHANGE, FILL A ROW ABOVE AND IMPORT THIS FILE ---'],
+      ]
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(schedRows), 'Scheduled Changes')
+
       XLSX.writeFile(wb, `${(bData?.name||activeBranchId).replace(/\s+/g,'-')}_${mode}_rates_${new Date().toISOString().slice(0,10)}.xlsx`)
-      showToast('Excel exported!')
+      showToast('Excel exported! Includes "Scheduled Changes" sheet.')
     } catch (err) { showToast('Export failed: ' + err.message,'error') }
   }
 
@@ -806,6 +894,31 @@ export function Rates() {
           <button className="btn btn-primary" onClick={addRoomType}>+ Add</button>
         </div>
       </Modal>
+
+      {/* ── Scheduled Rates ── */}
+      {activeBranchId && (
+        <ScheduledRates
+          branchId={activeBranchId}
+          branchName={branchName}
+          mode={mode}
+          activeRTypes={activeRTypes}
+          activeTSlots={activeTSlots}
+          activeRates={activeRates}
+          onScheduledApplied={handleExternalRatesUpdate}
+        />
+      )}
+
+      {/* ── Rate History + Rollback ── */}
+      {activeBranchId && (
+        <RateHistory
+          branchId={activeBranchId}
+          branchName={branchName}
+          mode={mode}
+          activeRTypes={activeRTypes}
+          activeTSlots={activeTSlots}
+          onRollback={handleExternalRatesUpdate}
+        />
+      )}
 
       {/* ── Bulk Adjust Modal ── */}
       <Modal show={bulkModal} onClose={() => setBulkModal(false)}
