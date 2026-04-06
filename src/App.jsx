@@ -16,8 +16,11 @@ import { AdminProvider }  from './context/AdminContext'
 function App() {
   return (
     <Routes>
+      {/* ── Public routes — no auth required ── */}
       <Route path="/login" element={<Login />} />
       <Route path="/kiosk" element={<Kiosk />} />
+
+      {/* ── Admin routes — requires login ── */}
       <Route
         path="/admin"
         element={
@@ -33,13 +36,15 @@ function App() {
         <Route path="holidays"    element={<Holidays />} />
         <Route path="audit"       element={<AuditLog />} />
         <Route path="settings"    element={<Settings />} />
-        <Route path="branches" element={
+        <Route path="branches"    element={
           <ProtectedRoute minRole="superadmin"><Branches /></ProtectedRoute>
         } />
-        <Route path="users" element={
+        <Route path="users"       element={
           <ProtectedRoute minRole="superadmin"><Users /></ProtectedRoute>
         } />
       </Route>
+
+      {/* ── Fallback ── */}
       <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>
   )
