@@ -487,6 +487,7 @@ export function Rates() {
                   newRates[cat][slot] = vals
                 })
               })
+              // adjSlots: [] means apply to all slots (correct for Excel import)
               await db.collection('branches').doc(activeBranchId).collection('scheduledRates').add({
                 label: lbl, applyAt, adjType: type, adjAmount: amt,
                 adjSlots: [], adjRooms: [], newRates, mode, status: 'pending',
@@ -916,6 +917,7 @@ export function Rates() {
           mode={mode}
           activeRTypes={activeRTypes}
           activeTSlots={activeTSlots}
+          activeRates={activeRates}
           onRollback={handleExternalRatesUpdate}
         />
       )}
