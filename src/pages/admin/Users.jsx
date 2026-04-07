@@ -2,29 +2,26 @@
 import { useState, useEffect } from 'react'
 import { useAuth }   from '../../context/AuthContext'
 import { useAdmin }  from '../../context/AdminContext'
-import { db }        from '../../firebase/config'
+import { auth, db }  from '../../firebase/config'
 import firebase      from '../../firebase/config'
 import { useAudit }  from '../../hooks/useAudit'
 import { Modal }     from '../../components/Modal'
 import { Toast }     from '../../components/Toast'
 import { useToast }  from '../../hooks/useToast'
 
-// ─── Firebase config reused for secondary app ─────────────
+// Firebase config for secondary app (user creation without signing out admin)
 const FIREBASE_CONFIG = {
-  apiKey:            "AIzaSyCx8lDuqt2OFPRrkCrKU0knY-eoXn2H3rM",
-  authDomain:        "kiosk-edf61.firebaseapp.com",
-  projectId:         "kiosk-edf61",
-  storageBucket:     "kiosk-edf61.firebasestorage.app",
-  messagingSenderId: "579100160054",
-  appId:             "1:579100160054:web:3b1ab13dac30c7bc18a897",
+  apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain:        import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId:         import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket:     import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId:             import.meta.env.VITE_FIREBASE_APP_ID,
 }
 
-// Create a user in Firebase Auth WITHOUT signing out the current admin.
-// Uses a temporary secondary Firebase app instance — FREE, no Cloud Functions needed.
 async function createFirebaseUser(email, password) {
   let secondaryApp = null
   try {
-    // Use a unique name so it doesn't conflict with the main app
     secondaryApp = firebase.initializeApp(FIREBASE_CONFIG, `secondary_${Date.now()}`)
     const cred = await secondaryApp.auth().createUserWithEmailAndPassword(email, password)
     const uid  = cred.user.uid
@@ -35,50 +32,41 @@ async function createFirebaseUser(email, password) {
   }
 }
 
-// Change password via secondary app (sign in as user, change pw, sign out)
-async function changeFirebasePassword(email, currentPasswordHint, newPassword) {
-  // We can't change another user's password without Admin SDK on free plan.
-  // Best we can do on free tier: store a temp password flag in Firestore.
-  // Super admin must share new password with user who changes it on first login.
-  return null // handled in savePassword()
-}
-
 const ROLES = [
   { value:'user',       label:'User',       desc:'View & edit rates for assigned branches' },
-  { value:'admin',      label:'Admin',      desc:'Edit rates & download history' },
-  { value:'superadmin', label:'Super Admin',desc:'Full access to all features' },
+  { value:'admin',      label:'Admin',      desc:'Edit rates & download history'            },
+  { value:'superadmin', label:'Super Admin',desc:'Full access to all features'              },
 ]
 
 export function Users() {
-  const { currentUser, userProfile }   = useAuth()
-  const { allBranches }                = useAdmin()
-  const { toast, showToast }           = useToast()
-  const { logAction }                  = useAudit(currentUser, userProfile)
-  const isSuperAdmin                   = userProfile?.role === 'superadmin'
+  const { currentUser, userProfile } = useAuth()
+  const { allBranches }              = useAdmin()
+  const { toast, showToast }         = useToast()
+  const { logAction }                = useAudit(currentUser, userProfile)
+  const isSuperAdmin                 = userProfile?.role === 'superadmin'
 
-  const [users, setUsers]               = useState([])
-  const [loading, setLoading]           = useState(true)
+  const [users,          setUsers]          = useState([])
+  const [loading,        setLoading]        = useState(true)
   const [systemBranches, setSystemBranches] = useState([])
 
   // Add/Edit modal
-  const [modal, setModal]               = useState(false)
-  const [editUser, setEditUser]         = useState(null)
-  const [uName, setUName]               = useState('')
-  const [uEmail, setUEmail]             = useState('')
-  const [uPassword, setUPassword]       = useState('')
-  const [uRole, setURole]               = useState('user')
-  const [uBranches, setUBranches]       = useState([])
-  const [allAccess, setAllAccess]       = useState(false)
-  const [saving, setSaving]             = useState(false)
+  const [modal,     setModal]     = useState(false)
+  const [editUser,  setEditUser]  = useState(null)
+  const [uName,     setUName]     = useState('')
+  const [uEmail,    setUEmail]    = useState('')
+  const [uPassword, setUPassword] = useState('')
+  const [uRole,     setURole]     = useState('user')
+  const [uBranches, setUBranches] = useState([])
+  const [allAccess, setAllAccess] = useState(false)
+  const [saving,    setSaving]    = useState(false)
 
-  // Change password modal
-  const [pwModal, setPwModal]           = useState(false)
-  const [pwUser, setPwUser]             = useState(null)
-  const [newPw, setNewPw]               = useState('')
-  const [savingPw, setSavingPw]         = useState(false)
+  // Password reset modal
+  const [pwModal,   setPwModal]   = useState(false)
+  const [pwUser,    setPwUser]    = useState(null)
+  const [savingPw,  setSavingPw]  = useState(false)
 
-  const [deletingId, setDeletingId]     = useState(null)
-  const [togglingId, setTogglingId]     = useState(null)
+  const [deletingId,  setDeletingId]  = useState(null)
+  const [togglingId,  setTogglingId]  = useState(null)
 
   useEffect(() => { loadUsers(); loadSystemBranches() }, [])
 
@@ -105,10 +93,8 @@ export function Users() {
 
   function openEdit(user) {
     setEditUser(user)
-    setUName(user.displayName || '')
-    setUEmail(user.email || '')
-    setUPassword('')
-    setURole(user.role || 'user')
+    setUName(user.displayName || ''); setUEmail(user.email || '')
+    setUPassword(''); setURole(user.role || 'user')
     const hasAll = (user.branches || []).includes('*')
     setAllAccess(hasAll)
     setUBranches(hasAll ? [] : (user.branches || []))
@@ -125,41 +111,30 @@ export function Users() {
     if (!uName.trim()) { showToast('Name is required.', 'warn'); return }
     if (!editUser && !uEmail.trim()) { showToast('Email is required.', 'warn'); return }
     if (!editUser && uPassword.length < 6) { showToast('Password must be at least 6 characters.', 'warn'); return }
-
     setSaving(true)
     try {
       if (editUser) {
-        // Update Firestore profile only
         await db.collection('users').doc(editUser.id).update({
-          displayName: uName.trim(),
-          role:        uRole,
-          branches:    getSelectedBranches(),
+          displayName: uName.trim(), role: uRole, branches: getSelectedBranches(),
         })
         await logAction('UPDATE_USER', `Updated user "${uName}" — role: ${uRole}`)
         showToast('User updated!')
       } else {
-        // ── CREATE USER using secondary app (FREE, no Cloud Functions) ──
         showToast('Creating Firebase account…')
         const uid = await createFirebaseUser(uEmail.trim(), uPassword)
-
-        // Save Firestore profile with the new uid
         await db.collection('users').doc(uid).set({
-          displayName: uName.trim(),
-          email:       uEmail.trim(),
-          role:        uRole,
-          branches:    getSelectedBranches(),
-          disabled:    false,
-          createdAt:   firebase.firestore.FieldValue.serverTimestamp(),
-          createdBy:   currentUser.uid,
+          displayName: uName.trim(), email: uEmail.trim(),
+          role: uRole, branches: getSelectedBranches(),
+          disabled: false,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+          createdBy: currentUser.uid,
         })
-
         await logAction('CREATE_USER', `Created user "${uName}" (${uEmail}) — role: ${uRole}`)
-        showToast(`User "${uName}" created successfully!`)
+        showToast(`User "${uName}" created!`)
       }
       setModal(false)
       loadUsers()
     } catch (err) {
-      // Friendly error messages
       const map = {
         'auth/email-already-in-use': 'That email is already registered.',
         'auth/invalid-email':        'Invalid email format.',
@@ -171,39 +146,32 @@ export function Users() {
     }
   }
 
-  // ── Change Password ───────────────────────────────────────
-  // On free plan we can't change another user's password via Admin SDK.
-  // We store the new password in Firestore so the user can update it on login,
-  // OR the admin can use Firebase Console > Authentication > Edit user.
-  function openChangePw(user) {
-    setPwUser(user); setNewPw(''); setPwModal(true)
-  }
+  // ── Password Reset — uses Firebase sendPasswordResetEmail (FREE) ───────────
+  function openChangePw(user) { setPwUser(user); setPwModal(true) }
 
   async function savePassword() {
-    if (newPw.length < 6) { showToast('Password must be at least 6 characters.', 'warn'); return }
     setSavingPw(true)
     try {
-      // Store as a "pending password reset" in Firestore.
-      // The user will be prompted to set this on their next login.
-      await db.collection('users').doc(pwUser.id).update({
-        pendingPassword: newPw,  // plain text — only visible to superadmin via Firestore
-        forcePasswordChange: true,
-      })
-      await logAction('CHANGE_PASSWORD', `Set new password for "${pwUser.displayName || pwUser.email}"`)
-      showToast(
-        `Password stored. Share "${newPw}" with ${pwUser.displayName || pwUser.email}. ` +
-        `They will be prompted to change it on next login.`,
-        'warn'
-      )
+      // Firebase built-in password reset — sends secure email link to user
+      // Completely free, no Cloud Functions or paid plan required
+      await auth.sendPasswordResetEmail(pwUser.email)
+      await logAction('RESET_PASSWORD',
+        `Sent password reset email to "${pwUser.displayName || pwUser.email}" (${pwUser.email})`)
+      showToast(`✅ Password reset email sent to ${pwUser.email}!`)
       setPwModal(false)
     } catch (err) {
-      showToast('Error: ' + err.message, 'error')
+      const map = {
+        'auth/user-not-found':    'No Firebase Auth account found for this email.',
+        'auth/invalid-email':     'Invalid email address.',
+        'auth/too-many-requests': 'Too many requests. Try again later.',
+      }
+      showToast(map[err.code] || 'Error: ' + err.message, 'error')
     } finally {
       setSavingPw(false)
     }
   }
 
-  // ── Disable / Enable ─────────────────────────────────────
+  // ── Disable / Enable ──────────────────────────────────────
   async function toggleDisable(user) {
     const willDisable = !user.disabled
     if (!confirm(`${willDisable ? 'Disable' : 'Enable'} user "${user.displayName || user.email}"?\n\n${willDisable ? 'They will not be able to log in.' : 'They will regain access.'}`)) return
@@ -220,7 +188,7 @@ export function Users() {
   // ── Delete ────────────────────────────────────────────────
   async function deleteUser(user) {
     if (user.id === currentUser.uid) { showToast('Cannot delete your own account.', 'error'); return }
-    if (!confirm(`Delete user "${user.displayName || user.email}"?\n\nThis removes their admin access. You must also delete their account in Firebase Console > Authentication.`)) return
+    if (!confirm(`Delete user "${user.displayName || user.email}"?\n\nThis removes their admin access. Delete their Firebase Auth account separately in Firebase Console → Authentication.`)) return
     setDeletingId(user.id)
     try {
       await db.collection('users').doc(user.id).delete()
@@ -237,16 +205,11 @@ export function Users() {
     <div className="page">
       <Toast toast={toast} />
 
-      {/* Info banner about free-tier user creation */}
-      <div style={{
-        background:'#e8f4fd', border:'1px solid #bee3f8', borderRadius:8,
-        padding:'10px 16px', marginBottom:16, fontSize:'0.82rem', color:'#1a6fa0',
-        display:'flex', alignItems:'center', gap:8,
-      }}>
+      <div style={{ background:'#e8f4fd', border:'1px solid #bee3f8', borderRadius:8, padding:'10px 16px', marginBottom:16, fontSize:'0.82rem', color:'#1a6fa0', display:'flex', alignItems:'center', gap:8 }}>
         <span style={{ fontSize:'1.1rem' }}>ℹ️</span>
         <span>
           User accounts are created directly — no Cloud Functions or paid plan required.
-          To <strong>delete a user's login</strong>, go to{' '}
+          To permanently <strong>delete a Firebase Auth account</strong>, go to{' '}
           <a href="https://console.firebase.google.com/project/kiosk-edf61/authentication/users"
             target="_blank" rel="noreferrer" style={{ color:'#1a6fa0' }}>
             Firebase Console → Authentication
@@ -277,8 +240,7 @@ export function Users() {
                     <div style={{ display:'flex', gap:4, flexWrap:'wrap', justifyContent:'flex-end' }}>
                       <span className={`role-pill ${rolePillClass[u.role] || 'role-user'}`}>{u.role}</span>
                       {isDisabled && (
-                        <span style={{ background:'#e74c3c22', color:'#c0392b', borderRadius:10,
-                          padding:'2px 7px', fontSize:'0.68rem', fontWeight:800 }}>DISABLED</span>
+                        <span style={{ background:'#e74c3c22', color:'#c0392b', borderRadius:10, padding:'2px 7px', fontSize:'0.68rem', fontWeight:800 }}>DISABLED</span>
                       )}
                     </div>
                   </div>
@@ -292,7 +254,7 @@ export function Users() {
                     {isSuperAdmin && (
                       <>
                         <button className="btn btn-outline" style={{ fontSize:'0.76rem' }} onClick={() => openChangePw(u)}>
-                          🔑 Password
+                          📧 Reset PW
                         </button>
                         {!isSelf && (
                           <button
@@ -319,14 +281,14 @@ export function Users() {
         )}
       </div>
 
-      {/* ── Add / Edit Modal ── */}
+      {/* Add / Edit Modal */}
       <Modal show={modal} onClose={() => setModal(false)}
         title={editUser ? `Edit: ${editUser.displayName || editUser.email}` : 'Add New User'}
         actions={
           <>
             <button className="btn btn-ghost" onClick={() => setModal(false)}>Cancel</button>
             <button className="btn btn-primary" onClick={saveUser} disabled={saving}>
-              {saving ? 'Creating…' : editUser ? 'Update User' : 'Create User'}
+              {saving ? 'Saving…' : editUser ? 'Update User' : 'Create User'}
             </button>
           </>
         }
@@ -344,9 +306,8 @@ export function Users() {
         {!editUser && (
           <div className="form-group">
             <label>Password</label>
-            <input type="text" placeholder="Min. 6 characters" value={uPassword}
-              onChange={e => setUPassword(e.target.value)} />
-            <small>Temporary password — share with the user to change on first login.</small>
+            <input type="text" placeholder="Min. 6 characters" value={uPassword} onChange={e => setUPassword(e.target.value)} />
+            <small>Temporary password — user should change it on first login via My Settings.</small>
           </div>
         )}
         <div className="form-group">
@@ -377,37 +338,32 @@ export function Users() {
           </div>
         )}
         {uRole === 'superadmin' && (
-          <div style={{ padding:'10px 14px', background:'#fff3cd', borderRadius:6,
-            fontSize:'0.82rem', color:'#856404', border:'1px solid #ffc107' }}>
+          <div style={{ padding:'10px 14px', background:'#fff3cd', borderRadius:6, fontSize:'0.82rem', color:'#856404', border:'1px solid #ffc107' }}>
             ⚠️ Super Admin has full access to all branches and features.
           </div>
         )}
       </Modal>
 
-      {/* ── Change Password Modal ── */}
+      {/* Password Reset Modal */}
       <Modal show={pwModal} onClose={() => setPwModal(false)}
-        title={`Change Password: ${pwUser?.displayName || pwUser?.email || ''}`}
+        title={`Reset Password: ${pwUser?.displayName || pwUser?.email || ''}`}
         actions={
           <>
             <button className="btn btn-ghost" onClick={() => setPwModal(false)}>Cancel</button>
             <button className="btn btn-primary" onClick={savePassword} disabled={savingPw}>
-              {savingPw ? 'Saving…' : 'Set Password'}
+              {savingPw ? 'Sending…' : '📧 Send Reset Email'}
             </button>
           </>
         }
       >
-        <div className="form-group">
-          <label>New Password</label>
-          <input type="text" placeholder="Min. 6 characters" value={newPw} onChange={e => setNewPw(e.target.value)} />
+        <div style={{ padding:'12px 14px', background:'#f9f9f9', borderRadius:6, marginBottom:12, fontSize:'0.85rem' }}>
+          <div><strong>User:</strong> {pwUser?.displayName || '—'}</div>
+          <div style={{ marginTop:4 }}><strong>Email:</strong> {pwUser?.email}</div>
         </div>
-        <div style={{ padding:'10px 14px', background:'#fff3cd', borderRadius:6,
-          fontSize:'0.82rem', color:'#856404', border:'1px solid #ffc107', marginTop:4 }}>
-          ⚠️ On the free Firebase plan, password resets require the user to log in
-          with the new password you share with them. Alternatively, reset it directly in{' '}
-          <a href="https://console.firebase.google.com/project/kiosk-edf61/authentication/users"
-            target="_blank" rel="noreferrer" style={{ color:'#856404' }}>
-            Firebase Console → Authentication
-          </a>.
+        <div style={{ padding:'12px 14px', background:'#e8f4fd', border:'1px solid #bee3f8', borderRadius:6, fontSize:'0.83rem', color:'#1a6fa0' }}>
+          ℹ️ A password reset <strong>email</strong> will be sent to this user's registered email.
+          They will receive a secure link from Firebase to set their new password.<br/><br/>
+          This is completely <strong>free</strong> — uses Firebase's built-in reset flow. No Cloud Functions required.
         </div>
       </Modal>
     </div>

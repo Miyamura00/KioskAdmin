@@ -13,7 +13,7 @@ const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Satur
 
 function formatDateTime(date, time) {
   if (!date) return '—'
-  const d = new Date(date + 'T00:00:00')
+  const d  = new Date(date + 'T00:00:00')
   const ds = d.toLocaleDateString('en-US', { year:'numeric', month:'short', day:'numeric' })
   return time ? `${ds} ${time}` : ds
 }
@@ -24,23 +24,27 @@ export function Holidays() {
   const { toast, showToast }            = useToast()
   const { logAction }                   = useAudit(currentUser, userProfile)
 
+  // Role checks
+  const isSuperAdmin = userProfile?.role === 'superadmin'
+  const isAdminUp    = ['admin', 'superadmin'].includes(userProfile?.role)
+
   const [systemBranches, setSystemBranches] = useState([])
   const [globalHolidays, setGlobalHolidays] = useState([])
-  const [loading, setLoading]               = useState(true)
+  const [loading,        setLoading]        = useState(true)
   const [branchSettings, setBranchSettings] = useState({})
   const [savingSchedule, setSavingSchedule] = useState(false)
 
   // Modal state
-  const [holModal, setHolModal]               = useState(false)
-  const [editId, setEditId]                   = useState(null)
-  const [holName, setHolName]                 = useState('')
-  const [holStart, setHolStart]               = useState('')
-  const [holEnd, setHolEnd]                   = useState('')
-  const [holStartTime, setHolStartTime]       = useState('00:00')
-  const [holEndTime, setHolEndTime]           = useState('23:59')
-  const [holBranches, setHolBranches]         = useState([])
+  const [holModal,        setHolModal]        = useState(false)
+  const [editId,          setEditId]          = useState(null)
+  const [holName,         setHolName]         = useState('')
+  const [holStart,        setHolStart]        = useState('')
+  const [holEnd,          setHolEnd]          = useState('')
+  const [holStartTime,    setHolStartTime]    = useState('00:00')
+  const [holEndTime,      setHolEndTime]      = useState('23:59')
+  const [holBranches,     setHolBranches]     = useState([])
   const [allBranchToggle, setAllBranchToggle] = useState(true)
-  const [savingHol, setSavingHol]             = useState(false)
+  const [savingHol,       setSavingHol]       = useState(false)
 
   const branchName = allBranches.find(b => b.id === activeBranchId)?.name || activeBranchId
 
@@ -69,7 +73,6 @@ export function Holidays() {
     } catch (err) { console.error(err) }
   }
 
-  // ── Weekend Schedule ─────────────────────────────────────
   async function saveSchedule(e) {
     e.preventDefault()
     if (!activeBranchId) return
@@ -91,7 +94,6 @@ export function Holidays() {
     finally { setSavingSchedule(false) }
   }
 
-  // ── Holiday CRUD ─────────────────────────────────────────
   function openAdd() {
     setEditId(null); setHolName(''); setHolStart(''); setHolEnd('')
     setHolStartTime('00:00'); setHolEndTime('23:59')
@@ -121,17 +123,14 @@ export function Holidays() {
 
   async function saveHoliday() {
     if (!holName || !holStart || !holEnd) { showToast('Fill name and dates.', 'warn'); return }
-    if (holStart > holEnd) { showToast('End date must be on or after start date.', 'warn'); return }
+    if (holStart > holEnd) { showToast('End date must be on or after start.', 'warn'); return }
     setSavingHol(true)
     const entry = {
-      name:       holName.trim(),
-      start:      holStart,
-      end:        holEnd,
-      startTime:  holStartTime || '00:00',
-      endTime:    holEndTime   || '23:59',
-      branches:   getEffectiveBranches(),
-      updatedAt:  firebase.firestore.FieldValue.serverTimestamp(),
-      updatedBy:  currentUser.email,
+      name: holName.trim(), start: holStart, end: holEnd,
+      startTime: holStartTime || '00:00', endTime: holEndTime || '23:59',
+      branches: getEffectiveBranches(),
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      updatedBy: currentUser.email,
     }
     try {
       if (editId) {
@@ -139,12 +138,8 @@ export function Holidays() {
         await logAction('UPDATE_HOLIDAY', `Updated holiday "${holName}"`)
         showToast('Holiday updated!')
       } else {
-        await db.collection('holidays').add({
-          ...entry,
-          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-          createdBy: currentUser.email,
-        })
-        await logAction('ADD_HOLIDAY', `Added holiday "${holName}" (${holStart} ${holStartTime} – ${holEnd} ${holEndTime})`)
+        await db.collection('holidays').add({ ...entry, createdAt: firebase.firestore.FieldValue.serverTimestamp(), createdBy: currentUser.email })
+        await logAction('ADD_HOLIDAY', `Added holiday "${holName}" (${holStart} – ${holEnd})`)
         showToast('Holiday added!')
       }
       setHolModal(false)
@@ -162,7 +157,6 @@ export function Holidays() {
   }
 
   const now   = new Date()
-  const today = new Date(now); today.setHours(0,0,0,0)
 
   function getStatus(h) {
     const start = new Date(h.start + 'T' + (h.startTime || '00:00'))
@@ -176,11 +170,11 @@ export function Holidays() {
     <div className="page">
       <Toast toast={toast} />
 
-      {/* Weekend Schedule */}
+      {/* Weekend Schedule (per branch) */}
       {activeBranchId ? (
         <div className="card">
-          <h2 className="card-title" style={{ marginBottom: 6 }}>Weekend Rate Schedule</h2>
-          <p style={{ color: '#666', fontSize: '0.83rem', marginBottom: 14 }}>
+          <h2 className="card-title" style={{ marginBottom:6 }}>Weekend Rate Schedule</h2>
+          <p style={{ color:'#666', fontSize:'0.83rem', marginBottom:14 }}>
             Branch: <strong>{branchName}</strong>
           </p>
           <form onSubmit={saveSchedule}>
@@ -205,7 +199,7 @@ export function Holidays() {
                 <label>At Hour (0–23)</label>
                 <input name="weh" type="number" min="0" max="23" defaultValue={branchSettings.weekendEndHour ?? 18} />
               </div>
-              <div className="form-group" style={{ alignSelf: 'flex-end' }}>
+              <div className="form-group" style={{ alignSelf:'flex-end' }}>
                 <button type="submit" className="btn btn-green" disabled={savingSchedule}>
                   {savingSchedule ? 'Saving…' : '✔ Save Schedule'}
                 </button>
@@ -214,9 +208,9 @@ export function Holidays() {
           </form>
         </div>
       ) : (
-        <div className="card" style={{ background: '#fffbe6', border: '1px solid #ffe082' }}>
-          <p style={{ color: '#856404', fontSize: '0.85rem' }}>
-            💡 Select a branch from the top bar to manage its weekend schedule. Global holiday events below affect all or selected branches.
+        <div className="card" style={{ background:'#fffbe6', border:'1px solid #ffe082' }}>
+          <p style={{ color:'#856404', fontSize:'0.85rem' }}>
+            💡 Select a branch from the top bar to manage its weekend schedule.
           </p>
         </div>
       )}
@@ -226,18 +220,28 @@ export function Holidays() {
         <div className="card-header-row">
           <div>
             <h2 className="card-title">Holiday Events</h2>
-            <p style={{ color: '#666', fontSize: '0.82rem', marginTop: 3 }}>
-              Global — choose which branches are affected. Includes start &amp; end time.
+            <p style={{ color:'#666', fontSize:'0.82rem', marginTop:3 }}>
+              Global — choose which branches are affected by each holiday.
             </p>
           </div>
-          <button className="btn btn-primary" onClick={openAdd}>+ Add Holiday</button>
+          {/* Only admin+ can add holidays */}
+          {isAdminUp && (
+            <button className="btn btn-primary" onClick={openAdd}>+ Add Holiday</button>
+          )}
         </div>
+
+        {/* Role notice for plain users */}
+        {!isAdminUp && (
+          <div style={{ background:'#e8f4fd', border:'1px solid #bee3f8', borderRadius:6, padding:'8px 12px', marginBottom:12, fontSize:'0.82rem', color:'#1a6fa0' }}>
+            ℹ️ You can view holiday events. Contact an Admin to add, edit, or remove holidays.
+          </div>
+        )}
 
         {loading ? <p className="hint">Loading…</p> :
          globalHolidays.length === 0 ? (
-          <p className="hint">No holidays scheduled. Click <strong>+ Add Holiday</strong>.</p>
+          <p className="hint">No holidays scheduled.{isAdminUp ? ' Click + Add Holiday.' : ''}</p>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
+          <div style={{ overflowX:'auto' }}>
             <table className="holiday-table">
               <thead>
                 <tr>
@@ -246,40 +250,41 @@ export function Holidays() {
                   <th>End Date &amp; Time</th>
                   <th>Affected Branches</th>
                   <th>Status</th>
-                  <th>Actions</th>
+                  {isAdminUp && <th>Actions</th>}
                 </tr>
               </thead>
               <tbody>
                 {globalHolidays.map(h => {
                   const status = getStatus(h)
                   const statusStyle = {
-                    active:   { background: '#ffc10733', color: '#856404' },
-                    upcoming: { background: '#d10c0c22', color: '#d10c0c' },
-                    past:     { background: '#88888822', color: '#888'    },
+                    active:   { background:'#ffc10733', color:'#856404' },
+                    upcoming: { background:'#d10c0c22', color:'#d10c0c' },
+                    past:     { background:'#88888822', color:'#888'    },
                   }
                   return (
                     <tr key={h.id}>
                       <td><strong>{h.name}</strong></td>
-                      <td style={{ fontSize: '0.83rem', whiteSpace: 'nowrap' }}>
-                        {formatDateTime(h.start, h.startTime)}
-                      </td>
-                      <td style={{ fontSize: '0.83rem', whiteSpace: 'nowrap' }}>
-                        {formatDateTime(h.end, h.endTime)}
-                      </td>
-                      <td style={{ fontSize: '0.8rem', maxWidth: 180 }}>{branchLabel(h)}</td>
+                      <td style={{ fontSize:'0.83rem', whiteSpace:'nowrap' }}>{formatDateTime(h.start, h.startTime)}</td>
+                      <td style={{ fontSize:'0.83rem', whiteSpace:'nowrap' }}>{formatDateTime(h.end, h.endTime)}</td>
+                      <td style={{ fontSize:'0.8rem', maxWidth:180 }}>{branchLabel(h)}</td>
                       <td>
                         <span className="holiday-badge" style={statusStyle[status]}>
                           {status.charAt(0).toUpperCase() + status.slice(1)}
                         </span>
                       </td>
-                      <td>
-                        <div style={{ display: 'flex', gap: 5 }}>
-                          <button className="btn btn-outline" style={{ padding: '4px 9px', fontSize: '0.76rem' }}
-                            onClick={() => openEdit(h)}>Edit</button>
-                          <button className="btn btn-danger" style={{ padding: '4px 9px', fontSize: '0.76rem' }}
-                            onClick={() => deleteHoliday(h)}>Remove</button>
-                        </div>
-                      </td>
+                      {isAdminUp && (
+                        <td>
+                          <div style={{ display:'flex', gap:5 }}>
+                            <button className="btn btn-outline" style={{ padding:'4px 9px', fontSize:'0.76rem' }}
+                              onClick={() => openEdit(h)}>Edit</button>
+                            {/* Only superadmin can delete */}
+                            {isSuperAdmin && (
+                              <button className="btn btn-danger" style={{ padding:'4px 9px', fontSize:'0.76rem' }}
+                                onClick={() => deleteHoliday(h)}>Remove</button>
+                            )}
+                          </div>
+                        </td>
+                      )}
                     </tr>
                   )
                 })}
@@ -289,76 +294,68 @@ export function Holidays() {
         )}
       </div>
 
-      {/* Add / Edit Modal */}
-      <Modal
-        show={holModal}
-        onClose={() => setHolModal(false)}
-        title={editId ? 'Edit Holiday Event' : 'Add Holiday Event'}
-        wide
-        actions={
-          <>
-            <button className="btn btn-ghost" onClick={() => setHolModal(false)}>Cancel</button>
-            <button className="btn btn-primary" onClick={saveHoliday} disabled={savingHol}>
-              {savingHol ? 'Saving…' : editId ? 'Update' : 'Add Holiday'}
-            </button>
-          </>
-        }
-      >
-        <div className="form-group">
-          <label>Event Name</label>
-          <input type="text" placeholder="e.g. Christmas Day"
-            value={holName} onChange={e => setHolName(e.target.value)} />
-        </div>
-
-        {/* Start date + time */}
-        <div className="form-row">
+      {/* Add / Edit Modal — only admin+ */}
+      {isAdminUp && (
+        <Modal show={holModal} onClose={() => setHolModal(false)}
+          title={editId ? 'Edit Holiday Event' : 'Add Holiday Event'} wide
+          actions={
+            <>
+              <button className="btn btn-ghost" onClick={() => setHolModal(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={saveHoliday} disabled={savingHol}>
+                {savingHol ? 'Saving…' : editId ? 'Update' : 'Add Holiday'}
+              </button>
+            </>
+          }
+        >
           <div className="form-group">
-            <label>Start Date</label>
-            <input type="date" value={holStart} onChange={e => setHolStart(e.target.value)} />
+            <label>Event Name</label>
+            <input type="text" placeholder="e.g. Christmas Day" value={holName} onChange={e => setHolName(e.target.value)} />
           </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label>Start Date</label>
+              <input type="date" value={holStart} onChange={e => setHolStart(e.target.value)} />
+            </div>
+            <div className="form-group">
+              <label>Start Time</label>
+              <input type="time" value={holStartTime} onChange={e => setHolStartTime(e.target.value)} />
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label>End Date</label>
+              <input type="date" value={holEnd} onChange={e => setHolEnd(e.target.value)} />
+            </div>
+            <div className="form-group">
+              <label>End Time</label>
+              <input type="time" value={holEndTime} onChange={e => setHolEndTime(e.target.value)} />
+            </div>
+          </div>
+          <p style={{ fontSize:'0.78rem', color:'#888', marginBottom:12, marginTop:-6 }}>
+            💡 Holiday rates activate between start and end date/time on the kiosk.
+          </p>
           <div className="form-group">
-            <label>Start Time</label>
-            <input type="time" value={holStartTime} onChange={e => setHolStartTime(e.target.value)} />
-          </div>
-        </div>
-
-        {/* End date + time */}
-        <div className="form-row">
-          <div className="form-group">
-            <label>End Date</label>
-            <input type="date" value={holEnd} onChange={e => setHolEnd(e.target.value)} />
-          </div>
-          <div className="form-group">
-            <label>End Time</label>
-            <input type="time" value={holEndTime} onChange={e => setHolEndTime(e.target.value)} />
-          </div>
-        </div>
-
-        <p style={{ fontSize: '0.78rem', color: '#888', marginBottom: 12, marginTop: -6 }}>
-          💡 Holiday rates will activate between start date/time and end date/time on the kiosk.
-        </p>
-
-        <div className="form-group">
-          <label>Affected Branches</label>
-          <div className="checkbox-grid" style={{ maxHeight: 200 }}>
-            <label style={{ gridColumn: '1/-1', borderBottom: '1px solid #eee', paddingBottom: 6, marginBottom: 4 }}>
-              <input type="checkbox" checked={allBranchToggle}
-                onChange={e => { setAllBranchToggle(e.target.checked); if (e.target.checked) setHolBranches([]) }} />
-              &nbsp;<strong>All Branches</strong>
-            </label>
-            {systemBranches.map(b => (
-              <label key={b.id}>
-                <input type="checkbox"
-                  checked={allBranchToggle || holBranches.includes(b.id)}
-                  disabled={allBranchToggle}
-                  onChange={() => toggleHolBranch(b.id)} />
-                &nbsp;{b.name || b.id}
+            <label>Affected Branches</label>
+            <div className="checkbox-grid" style={{ maxHeight:200 }}>
+              <label style={{ gridColumn:'1/-1', borderBottom:'1px solid #eee', paddingBottom:6, marginBottom:4 }}>
+                <input type="checkbox" checked={allBranchToggle}
+                  onChange={e => { setAllBranchToggle(e.target.checked); if (e.target.checked) setHolBranches([]) }} />
+                &nbsp;<strong>All Branches</strong>
               </label>
-            ))}
+              {systemBranches.map(b => (
+                <label key={b.id}>
+                  <input type="checkbox"
+                    checked={allBranchToggle || holBranches.includes(b.id)}
+                    disabled={allBranchToggle}
+                    onChange={() => toggleHolBranch(b.id)} />
+                  &nbsp;{b.name || b.id}
+                </label>
+              ))}
+            </div>
+            <small>Only checked branches will switch to holiday rates during this event.</small>
           </div>
-          <small>Only checked branches will switch to holiday rates during this event.</small>
-        </div>
-      </Modal>
+        </Modal>
+      )}
     </div>
   )
 }
