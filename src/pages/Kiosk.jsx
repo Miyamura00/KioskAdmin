@@ -47,7 +47,7 @@ function getCategory(now, settings, holidays, branchId) {
 }
 
 function displaySlotName(key) { return key.replace(/_\d+$/, '') }
-function fmtVal(v) { const n = Number(v); return !n ? '-' : n.toLocaleString() }
+function fmtVal(v) { const n = Number(v); return !n ? '-' : n.toString() }
 
 function RateTable({ label, rates, slots, roomTypes, now, schedules, cat, disabledSlots }) {
   const active = (slots || []).filter(s =>
@@ -65,9 +65,9 @@ function RateTable({ label, rates, slots, roomTypes, now, schedules, cat, disabl
   const colScale = Math.max(0.55, 1 - (colCount - 5) * 0.07)
   const rowScale = Math.max(0.70, 1 - (rowCount - 6) * 0.05)
   const scale    = Math.min(colScale, rowScale)
-  const thFontSize  = `${(1.4  * scale).toFixed(2)}vw`
-  const tdFontSize  = `${(1.55 * scale).toFixed(2)}vw`
-  const lblFontSize = `${(1.3  * scale).toFixed(2)}vw`
+  const thFontSize  = `${(1.8  * scale).toFixed(2)}vw`
+  const tdFontSize  = `${(2.0 * scale).toFixed(2)}vw`
+  const lblFontSize = `${(2.0  * scale).toFixed(2)}vw`
   const labelPct    = Math.max(14, 22 - (colCount - 5) * 1.5) + '%'
 
   return (
@@ -148,7 +148,16 @@ export function Kiosk() {
   const timeStr = now.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true })
 
   return (
-    <div className="kiosk-root">
+    <div className="kiosk-root" 
+    onClick={document.addEventListener("click", function () {
+        if (!document.fullscreenElement) {
+          // If not in fullscreen, enter fullscreen mode
+          document.documentElement.requestFullscreen().catch((err) => {
+            console.log(`Error: ${err.message}`)
+          })
+        }
+        // If already in fullscreen, do nothing
+      })}>
       {!loaded && (
         <div className="loading-screen">
           <div className="spinner" />
