@@ -126,76 +126,144 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
   const [saving,       setSaving]       = useState(false)
   const [expandedAdj,  setExpandedAdj]  = useState(0)
 
+  // ── Realtime listener + auto-apply on a 30s tick ──────────
   useEffect(() => {
-    if (branchId) { fetchScheduled(); autoApplyPending() }
-    else setScheduled([])
+    if (!branchId) { setScheduled([]); return }
+
+    // Listen in realtime — data stays fresh without manual refresh
+    const unsub = db
+      .collection('branches').doc(branchId)
+      .collection('scheduledRates')
+      .orderBy('applyAt', 'asc')
+      .onSnapshot(snap => {
+        const entries = snap.docs
+          .map(d => ({ id: d.id, ...d.data() }))
+          .filter(e => e.mode === mode && e.status === 'pending')
+        setScheduled(entries)
+        // Immediately apply anything that's overdue when data arrives
+        entries.forEach(e => { if (isPast(e.applyAt)) applyEntry(e, true) })
+      }, err => console.error('scheduledRates snapshot:', err))
+
+    // Also tick every 30 s so entries due while page is open get applied promptly
+    const tick = setInterval(async () => {
+      try {
+        const snap = await db.collection('branches').doc(branchId)
+          .collection('scheduledRates')
+          .where('mode', '==', mode)
+          .where('status', '==', 'pending')
+          .get()
+        for (const doc of snap.docs) {
+          const e = { id: doc.id, ...doc.data() }
+          if (isPast(e.applyAt)) await applyEntry(e, true)
+        }
+      } catch (err) { console.error('tick apply:', err) }
+    }, 30_000)
+
+    return () => { unsub(); clearInterval(tick) }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [branchId, mode])
 
   async function fetchScheduled() {
-    setLoading(true)
     try {
-      const snap = await db.collection('branches').doc(branchId).collection('scheduledRates').orderBy('applyAt','asc').get()
-      setScheduled(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(e => e.mode === mode))
+      const snap = await db.collection('branches').doc(branchId)
+        .collection('scheduledRates')
+        .where('mode', '==', mode)
+        .where('status', '==', 'pending')
+        .orderBy('applyAt', 'asc').get()
+      setScheduled(snap.docs.map(d => ({ id: d.id, ...d.data() })))
     } catch (err) { console.error(err) }
-    finally { setLoading(false) }
   }
 
-  async function autoApplyPending() {
-    try {
-      const snap = await db.collection('branches').doc(branchId).collection('scheduledRates')
-        .where('mode','==',mode).where('status','==','pending').get()
-      for (const doc of snap.docs) {
-        const e = { id: doc.id, ...doc.data() }
-        if (isPast(e.applyAt)) await applyEntry(e, true)
-      }
-    } catch (err) { console.error('Auto-apply:', err) }
-  }
+  // Guard against applying the same entry twice concurrently
+  const applyingSet = new Set()
 
   async function applyEntry(entry, silent = false) {
+    if (applyingSet.has(entry.id)) return   // already in progress
     if (!silent && !confirm(`Apply "${entry.label}" now?\nThis updates live rates immediately.`)) return
+    applyingSet.add(entry.id)
     setApplying(entry.id)
     try {
-      const ref = db.collection('branches').doc(branchId)
-      const curr = await ref.get()
+      const ref      = db.collection('branches').doc(branchId)
+      const curr     = await ref.get()
       const currData = curr.data() || {}
       const currRates = mode === 'walkin' ? currData.rates : currData.driveInRates
+
+      // Safety: skip if already applied (another tab may have done it)
+      const entrySnap = await ref.collection('scheduledRates').doc(entry.id).get()
+      if (!entrySnap.exists || entrySnap.data()?.status !== 'pending') return
+
+      // Archive current rates to history before overwriting
       if (currRates) {
         await ref.collection('rateHistory').add({
-          savedAt: firebase.firestore.FieldValue.serverTimestamp(),
-          savedBy: currentUser?.email || 'system',
-          savedByName: userProfile?.displayName || currentUser?.email || 'Auto',
-          mode, rates: currRates,
-          note: `Archived before applying: "${entry.label}"`,
+          savedAt:       firebase.firestore.FieldValue.serverTimestamp(),
+          savedBy:       currentUser?.email || 'system',
+          savedByName:   userProfile?.displayName || currentUser?.email || 'Auto',
+          mode,
+          rates:         currRates,
+          note:          `Auto-applied scheduled: "${entry.label}"`,
           scheduledLabel: entry.label,
         })
       }
-      const update = mode === 'walkin' ? { rates: entry.newRates } : { driveInRates: entry.newRates }
+
+      // Determine final rates — validate they have real values (not all zeros)
+      let finalRates = entry.newRates
+      const hasRealValues = finalRates && Object.values(finalRates).some(cat =>
+        Object.values(cat || {}).some(arr =>
+          Array.isArray(arr) && arr.some(v => Number(v) > 0)
+        )
+      )
+      if (!hasRealValues && entry.adjustments?.length) {
+        // Fallback: recompute from adjustments on top of current rates
+        finalRates = applyAdjustments(currRates || {}, entry.adjustments, activeTSlots, activeRTypes)
+      }
+
+      // Apply to main branch rates
+      const update = mode === 'walkin' ? { rates: finalRates } : { driveInRates: finalRates }
       await ref.update(update)
-      await ref.collection('scheduledRates').doc(entry.id).update({ status:'applied', appliedAt: firebase.firestore.FieldValue.serverTimestamp(), appliedBy: currentUser?.email || 'system' })
+
+      // ── Delete the scheduled entry from Firestore (not just mark applied) ──
+      // The rate history entry above is the audit trail.
+      await ref.collection('scheduledRates').doc(entry.id).delete()
+
+      // Schedule rollback if configured
       if (entry.rollbackAt && entry.rollbackRates) {
         await ref.collection('scheduledRates').add({
-          label: `↩ Auto-Rollback: ${entry.label}`, applyAt: entry.rollbackAt,
-          newRates: entry.rollbackRates, adjustments: [], mode, status: 'pending', isRollback: true,
-          rollbackFor: entry.id, createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-          createdBy: currentUser?.email || 'system', createdByName: userProfile?.displayName || 'Auto-Rollback',
+          label:         `↩ Auto-Rollback: ${entry.label}`,
+          applyAt:       entry.rollbackAt,
+          newRates:      entry.rollbackRates,
+          adjustments:   [],
+          mode,
+          status:        'pending',
+          isRollback:    true,
+          rollbackFor:   entry.id,
+          createdAt:     firebase.firestore.FieldValue.serverTimestamp(),
+          createdBy:     currentUser?.email || 'system',
+          createdByName: userProfile?.displayName || 'Auto-Rollback',
         })
       }
-      await logAction('APPLY_SCHEDULED_RATES', `Applied "${entry.label}" for ${branchName}`, branchId, branchName)
+
+      await logAction('APPLY_SCHEDULED_RATES', `Auto-applied "${entry.label}" for ${branchName}`, branchId, branchName)
       if (!silent) showToast(`✅ "${entry.label}" applied!`)
-      if (onScheduledApplied) onScheduledApplied(entry.newRates)
-      fetchScheduled()
-    } catch (err) { if (!silent) showToast('Error: ' + err.message, 'error') }
-    finally { setApplying(null) }
+      if (onScheduledApplied) onScheduledApplied(finalRates)
+      // onSnapshot will auto-refresh the list — no need to call fetchScheduled()
+    } catch (err) {
+      console.error('applyEntry error:', err)
+      if (!silent) showToast('Error: ' + err.message, 'error')
+    } finally {
+      applyingSet.delete(entry.id)
+      setApplying(null)
+    }
   }
 
   async function cancelEntry(entry) {
-    if (!confirm(`Cancel "${entry.label}"?`)) return
+    if (!confirm(`Cancel and remove "${entry.label}"?`)) return
     setCancelling(entry.id)
     try {
-      await db.collection('branches').doc(branchId).collection('scheduledRates').doc(entry.id).update({ status:'cancelled' })
+      // Delete the doc — cancelled schedules don't need to remain
+      await db.collection('branches').doc(branchId).collection('scheduledRates').doc(entry.id).delete()
       await logAction('CANCEL_SCHEDULED_RATES', `Cancelled "${entry.label}"`, branchId, branchName)
-      showToast('Cancelled.', 'warn')
-      fetchScheduled()
+      showToast('Cancelled and removed.', 'warn')
+      // onSnapshot will auto-refresh
     } catch (err) { showToast('Error: ' + err.message, 'error') }
     finally { setCancelling(null) }
   }
@@ -207,7 +275,6 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
       await db.collection('branches').doc(branchId).collection('scheduledRates').doc(entry.id).delete()
       await logAction('DELETE_SCHEDULED_RATES', `Deleted scheduled rate change "${entry.label}"`, branchId, branchName)
       showToast('Deleted.', 'warn')
-      fetchScheduled()
     } catch (err) { showToast('Error: ' + err.message, 'error') }
     finally { setDeleting(null) }
   }
@@ -280,8 +347,8 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
     finally { setSaving(false) }
   }
 
-  const pending = scheduled.filter(e => e.status === 'pending')
-  const past    = scheduled.filter(e => e.status !== 'pending')
+  const pending = scheduled  // all entries in state are pending (applied ones are deleted from Firestore)
+  const past    = []         // applied entries are deleted; audit trail is in rateHistory collection
 
   return (
     <div className="card mt20">
@@ -289,7 +356,9 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
       <div className="card-header-row">
         <div>
           <h2 className="card-title">⏰ Scheduled Rate Changes</h2>
-          <p style={{ color:'#888', fontSize:'0.8rem', marginTop:3 }}>Multi-step changes — each schedule can contain multiple adjustments applied in order.</p>
+          <p style={{ color:'#888', fontSize:'0.8rem', marginTop:3 }}>
+            Auto-applies at scheduled time — no manual action needed. Applied entries are removed automatically.
+          </p>
         </div>
         <div className="action-group">
           <button className="btn btn-outline" style={{ fontSize:'0.82rem' }} onClick={fetchScheduled}>🔄 Refresh</button>
@@ -300,49 +369,60 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
       {loading ? <p className="hint">Loading…</p> : (
         <>
           {pending.length === 0 ? (
-            <p className="hint">No pending scheduled changes. Click <strong>+ Schedule Change</strong>.</p>
+            <p className="hint">No pending scheduled changes. Click <strong>+ Schedule Change</strong> or use <strong>🤖 AI Import</strong>.</p>
           ) : (
             <div style={{ overflowX:'auto', marginBottom:16 }}>
               <table className="holiday-table">
-                <thead><tr><th>Label</th><th>Apply At</th><th>Adjustments</th><th>Rollback</th><th>Status</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Label</th><th>Apply At</th><th>Adjustments</th><th>Rollback</th><th>Actions</th></tr></thead>
                 <tbody>
                   {pending.map(entry => {
                     const due  = isPast(entry.applyAt)
                     const adjs = entry.adjustments || []
+                    const isAI = entry.source === 'ai-image-upload'
                     return (
-                      <tr key={entry.id} style={entry.isRollback ? { background:'#fffbe6' } : {}}>
+                      <tr key={entry.id} style={entry.isRollback ? { background:'#fffbe6' } : due ? { background:'#fff8e1' } : {}}>
                         <td>
                           <strong>{entry.label}</strong>
                           {entry.isRollback && <span style={{ marginLeft:6, color:'#e67e22', fontSize:'0.72rem' }}>↩ Auto-Rollback</span>}
+                          {isAI && <span style={{ marginLeft:6, background:'#e8f5e9', color:'#2e7d32', borderRadius:8, padding:'1px 6px', fontSize:'0.68rem', fontWeight:800 }}>🤖 AI</span>}
                         </td>
                         <td style={{ fontSize:'0.82rem', whiteSpace:'nowrap' }}>
                           {formatDt(entry.applyAt)}
-                          {due && <span style={{ marginLeft:6, background:'#ffc107', color:'#5a3a00', borderRadius:8, padding:'1px 6px', fontSize:'0.68rem', fontWeight:800 }}>DUE</span>}
+                          {due
+                            ? <span style={{ marginLeft:6, background:'#ffc107', color:'#5a3a00', borderRadius:8, padding:'1px 6px', fontSize:'0.68rem', fontWeight:800 }}>⏳ APPLYING…</span>
+                            : <span style={{ marginLeft:6, background:'#e8f5e9', color:'#2e7d32', borderRadius:8, padding:'1px 6px', fontSize:'0.68rem', fontWeight:700 }}>⚡ Auto</span>
+                          }
                         </td>
                         <td style={{ fontSize:'0.79rem' }}>
-                          {adjs.length === 0 && '—'}
-                          {adjs.map((a,i) => (
-                            <div key={i}>
-                              {a.type==='increase'?'➕':a.type==='decrease'?'➖':'🟰'} ₱{Number(a.amount).toLocaleString()}
-                              {a.slots?.length?` · ${a.slots.length} slot(s)`:''}
-                              {a.rooms?.length?` × ${a.rooms.length} room(s)`:''}
-                            </div>
-                          ))}
+                          {adjs.length === 0
+                            ? <span style={{ color:'#888', fontStyle:'italic' }}>Full rate set (AI import)</span>
+                            : adjs.map((a,i) => (
+                              <div key={i}>
+                                {a.type==='increase'?'➕':a.type==='decrease'?'➖':'🟰'} ₱{Number(a.amount).toLocaleString()}
+                                {a.slots?.length?` · ${a.slots.length} slot(s)`:''}
+                                {a.rooms?.length?` × ${a.rooms.length} room(s)`:''}
+                              </div>
+                            ))
+                          }
                         </td>
                         <td style={{ fontSize:'0.79rem', color: entry.rollbackAt ? '#e67e22' : '#aaa' }}>
                           {entry.rollbackAt ? formatDt(entry.rollbackAt) : '—'}
                         </td>
-                        <td><span className="audit-action-pill" style={STATUS_STYLE[entry.status]||{}}>{entry.status}</span></td>
                         <td>
                           <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
                             {due && (
-                              <button className="btn btn-green" style={{ fontSize:'0.75rem', padding:'4px 9px' }} disabled={applying===entry.id} onClick={() => applyEntry(entry)}>
-                                {applying===entry.id ? '…' : '▶ Apply'}
+                              <button className="btn btn-green" style={{ fontSize:'0.75rem', padding:'4px 9px' }}
+                                disabled={applying===entry.id} onClick={() => applyEntry(entry)}>
+                                {applying===entry.id ? '⏳…' : '▶ Apply Now'}
                               </button>
                             )}
-                            <button className="btn btn-outline" style={{ fontSize:'0.75rem', padding:'4px 9px' }} onClick={() => openEdit(entry)}>✏️ Edit</button>
-                            <button className="btn btn-danger" style={{ fontSize:'0.75rem', padding:'4px 9px' }} disabled={cancelling===entry.id} onClick={() => cancelEntry(entry)}>
-                              {cancelling===entry.id ? '…' : 'Cancel'}
+                            {!isAI && (
+                              <button className="btn btn-outline" style={{ fontSize:'0.75rem', padding:'4px 9px' }}
+                                onClick={() => openEdit(entry)}>✏️ Edit</button>
+                            )}
+                            <button className="btn btn-danger" style={{ fontSize:'0.75rem', padding:'4px 9px' }}
+                              disabled={cancelling===entry.id} onClick={() => cancelEntry(entry)}>
+                              {cancelling===entry.id ? '…' : '🗑 Remove'}
                             </button>
                           </div>
                         </td>
@@ -352,33 +432,6 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
                 </tbody>
               </table>
             </div>
-          )}
-
-          {past.length > 0 && (
-            <details style={{ marginTop:8 }}>
-              <summary style={{ cursor:'pointer', color:'#888', fontSize:'0.83rem', fontWeight:700 }}>Past changes ({past.length})</summary>
-              <div style={{ overflowX:'auto', marginTop:8 }}>
-                <table className="holiday-table">
-                  <thead><tr><th>Label</th><th>Scheduled For</th><th>Status</th><th>By</th><th></th></tr></thead>
-                  <tbody>
-                    {past.map(e => (
-                      <tr key={e.id}>
-                        <td><strong>{e.label}</strong></td>
-                        <td style={{ fontSize:'0.8rem' }}>{formatDt(e.applyAt)}</td>
-                        <td><span className="audit-action-pill" style={STATUS_STYLE[e.status]||{}}>{e.status}</span></td>
-                        <td style={{ fontSize:'0.8rem' }}>{e.createdByName||e.createdBy}</td>
-                        <td>
-                          <button className="btn btn-danger" style={{ fontSize:'0.72rem', padding:'3px 8px' }}
-                            disabled={deleting===e.id} onClick={() => deleteEntry(e)}>
-                            {deleting===e.id ? '…' : '🗑'}
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </details>
           )}
         </>
       )}

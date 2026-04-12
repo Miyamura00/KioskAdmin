@@ -9,8 +9,9 @@ import { Toast }     from '../../components/Toast'
 import { useToast }  from '../../hooks/useToast'
 import { useAudit }  from '../../hooks/useAudit'
 import * as XLSX     from 'xlsx'
-import { RateHistory }     from './RateHistory'
-import { ScheduledRates }  from './ScheduledRates'
+import { RateHistory }         from './RateHistory'
+import { ScheduledRates }      from './ScheduledRates'
+import { useGroqRatesExtract } from '../../hooks/useGroqRatesExtract'
 
 const CATEGORIES = ['weekday','weekend','holiday']
 const CAT_COLORS = { weekday:'#444', weekend:'#1a5276', holiday:'#700909' }
@@ -28,7 +29,23 @@ export function Rates() {
   const { toast, showToast }            = useToast()
   const { logAction }                   = useAudit(currentUser, userProfile)
   const isSuperAdmin = userProfile?.role === 'superadmin'
-  const fileRef = useRef(null)
+  const fileRef   = useRef(null)
+  const aiFileRef = useRef(null)
+
+  // ── AI Image Import (Groq) ───────────────────────────────
+  const { extractAndMap, groqStatus } = useGroqRatesExtract()
+  const [aiModal,      setAiModal]      = useState(false)
+  const [aiCategory,   setAiCategory]   = useState('weekday')
+  const [aiTarget,     setAiTarget]     = useState('current')
+  const [aiPreview,    setAiPreview]    = useState(null)
+  const [aiSchedLabel, setAiSchedLabel] = useState('')
+  const [aiSchedDate,  setAiSchedDate]  = useState('')
+  const [aiSchedTime,  setAiSchedTime]  = useState('06:00')
+
+  // ── Copy Rates ───────────────────────────────────────────
+  const [copyModal,  setCopyModal]  = useState(false)
+  const [copySrc,    setCopySrc]    = useState('weekday')
+  const [copyDst,    setCopyDst]    = useState('weekend')
 
   // mode: 'walkin' | 'drivein'
   const [mode, setMode]           = useState('walkin')
@@ -601,6 +618,90 @@ export function Rates() {
     } catch (err) { showToast('Export failed: ' + err.message,'error') }
   }
 
+  // ── AI Image Import handlers ─────────────────────────────
+  async function handleAIUpload(e) {
+    const file = e.target.files[0]
+    if (!file) return
+    e.target.value = ''
+    const result = await extractAndMap(file, aiCategory, activeRTypes, activeTSlots)
+    if (result) setAiPreview(result)
+  }
+
+  async function applyAIRates() {
+    if (!aiPreview) return
+    const { rates: extracted, summary } = aiPreview
+    const cat = summary.category
+
+    if (aiTarget === 'current') {
+      activeSetRates(prev => {
+        const updated  = { ...prev }
+        const catRates = { ...(updated[cat] || {}) }
+        Object.entries(extracted[cat]).forEach(([slot, vals]) => {
+          const existing = [...(catRates[slot] || Array(activeRTypes.length).fill(0))]
+          vals.forEach((v, i) => { if (v !== null) existing[i] = v })
+          catRates[slot] = existing
+        })
+        updated[cat] = catRates
+        return updated
+      })
+      showToast(`✅ ${summary.matchedSlots} slot(s) updated for ${cat}. Click Save Rates to confirm.`)
+      setAiModal(false); setAiPreview(null)
+
+    } else {
+      if (!aiSchedLabel.trim()) { showToast('Enter a label for the schedule.', 'warn'); return }
+      if (!aiSchedDate)         { showToast('Pick an apply date.', 'warn'); return }
+      if (!activeBranchId)      { showToast('Select a branch first.', 'warn'); return }
+      try {
+        // Fetch FRESH rates from Firestore — avoids zero values from stale in-memory state
+        const snap       = await db.collection('branches').doc(activeBranchId).get()
+        const branchData = snap.data() || {}
+        const freshRates = mode === 'walkin' ? (branchData.rates || {}) : (branchData.driveInRates || {})
+
+        const newRates = {}
+        CATEGORIES.forEach(c => {
+          newRates[c] = {}
+          ;(activeTSlots[c] || []).forEach(slot => {
+            newRates[c][slot] = [...(freshRates[c]?.[slot] || Array(activeRTypes.length).fill(0))].map(v => Number(v) || 0)
+          })
+        })
+        // Overlay only AI-extracted values for the target category
+        Object.entries(extracted[cat]).forEach(([slot, vals]) => {
+          if (!newRates[cat][slot]) newRates[cat][slot] = Array(activeRTypes.length).fill(0)
+          vals.forEach((v, i) => { if (v !== null && v !== undefined) newRates[cat][slot][i] = Number(v) || 0 })
+        })
+
+        const applyAt = new Date(aiSchedDate + 'T' + aiSchedTime).toISOString()
+        await db.collection('branches').doc(activeBranchId).collection('scheduledRates').add({
+          label: aiSchedLabel, applyAt, mode, newRates, adjustments: [], status: 'pending',
+          createdAt:    firebase.firestore.FieldValue.serverTimestamp(),
+          createdBy:    currentUser.email,
+          createdByName: userProfile?.displayName || currentUser.email,
+          source:       'ai-image-upload',
+        })
+        await logAction('CREATE_SCHEDULED_RATES',
+          `AI image upload: Scheduled "${aiSchedLabel}" for ${cat} on ${aiSchedDate}`,
+          activeBranchId, branchName)
+        showToast(`✅ Scheduled "${aiSchedLabel}" — will auto-apply on ${aiSchedDate} at ${aiSchedTime}`)
+        setAiModal(false); setAiPreview(null); setAiSchedLabel(''); setAiSchedDate('')
+      } catch (err) { showToast('Error saving schedule: ' + err.message, 'error') }
+    }
+  }
+
+  // ── Copy Rates handler ───────────────────────────────────
+  function applyCopyRates() {
+    if (copySrc === copyDst) { showToast('Source and destination are the same.', 'warn'); return }
+    if (!confirm(`Copy all ${copySrc.toUpperCase()} rates → ${copyDst.toUpperCase()}?\nThis will overwrite ${copyDst} rates.`)) return
+    const srcRates = activeRates[copySrc] || {}
+    activeSetRates(prev => ({
+      ...prev,
+      [copyDst]: Object.fromEntries(
+        Object.entries(srcRates).map(([slot, vals]) => [slot, [...vals]])
+      )
+    }))
+    showToast(`✅ Copied ${copySrc} → ${copyDst}. Click Save Rates to confirm.`)
+    setCopyModal(false)
+  }
+
   // ── Render ───────────────────────────────────────────────
   if (!activeBranchId) return (
     <div className="page"><div className="card"><p className="hint">Select a branch from the top bar.</p></div></div>
@@ -624,6 +725,22 @@ export function Rates() {
     <div className="page">
       <Toast toast={toast} />
 
+      {groqStatus && (
+        <div style={{
+          display:'flex', alignItems:'center', gap:8, padding:'9px 14px', borderRadius:6,
+          fontSize:'0.83rem', marginBottom:10,
+          background: groqStatus.type==='loading'?'#dbeafe': groqStatus.type==='success'?'#d4edda':'#f8d7da',
+          color:      groqStatus.type==='loading'?'#1e40af': groqStatus.type==='success'?'#155724':'#721c24',
+        }}>
+          {groqStatus.type==='loading' && (
+            <span style={{ width:14,height:14,border:'2px solid #bfdbfe',borderTopColor:'#1e40af',
+              borderRadius:'50%',animation:'spin 0.7s linear infinite',display:'inline-block',flexShrink:0 }} />
+          )}
+          {groqStatus.type==='success' && '✅ '}{groqStatus.type==='error' && '❌ '}
+          {groqStatus.message}
+        </div>
+      )}
+
       <div className="card">
         <div className="card-header-row">
           <h2 className="card-title">Rate Management</h2>
@@ -645,6 +762,16 @@ export function Rates() {
             <button className="btn btn-outline" onClick={() => fileRef.current?.click()}>📥 Import Excel</button>
             <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display:'none' }}
               onChange={e => { if(e.target.files[0]) handleExcelImport(e.target.files[0]); e.target.value='' }} />
+            <button className="btn btn-outline"
+              onClick={() => { setAiPreview(null); setAiModal(true) }}
+              title="Upload a photo of a rates sheet — AI auto-fills the table">
+              🤖 AI Import
+            </button>
+            <button className="btn btn-outline"
+              onClick={() => setCopyModal(true)}
+              title="Copy rates from one category to another">
+              📋 Copy Rates
+            </button>
             <button className="btn btn-outline" onClick={exportRates}>📤 Export Excel</button>
             <button className="btn btn-primary" onClick={saveRates} disabled={saving}>
               {saving ? 'Saving…' : '💾 Save Rates'}
@@ -1068,6 +1195,271 @@ export function Rates() {
           💡 For overnight windows (e.g. 20:00 → 06:00), set From to the later time. The system handles midnight wraparound automatically.
         </p>
       </Modal>
+      {/* ── Copy Rates Modal ── */}
+      <Modal show={copyModal} onClose={() => setCopyModal(false)}
+        title="📋 Copy Rates Between Categories"
+        actions={
+          <>
+            <button className="btn btn-ghost" onClick={() => setCopyModal(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={applyCopyRates}
+              disabled={copySrc === copyDst}>
+              ✅ Copy {copySrc.toUpperCase()} → {copyDst.toUpperCase()}
+            </button>
+          </>
+        }
+      >
+        <p style={{ color:'#666', fontSize:'0.83rem', marginBottom:16 }}>
+          Copy all rates from one category into another. This overwrites the destination — review carefully before saving.
+        </p>
+        <div className="form-row">
+          <div className="form-group">
+            <label>Copy FROM</label>
+            <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+              {CATEGORIES.map(cat => (
+                <label key={cat} style={{ display:'flex', alignItems:'center', gap:8, cursor:'pointer',
+                  padding:'8px 12px', border:`2px solid ${copySrc===cat ? CAT_COLORS[cat] : '#e0e0e0'}`,
+                  borderRadius:6, background: copySrc===cat ? `${CAT_COLORS[cat]}18` : '#fafafa',
+                  fontWeight: copySrc===cat ? 700 : 400 }}>
+                  <input type="radio" name="copySrc" checked={copySrc===cat}
+                    onChange={() => setCopySrc(cat)} style={{ width:'auto' }} />
+                  <span style={{ color: copySrc===cat ? CAT_COLORS[cat] : '#333', textTransform:'capitalize' }}>
+                    {cat}
+                  </span>
+                  <span style={{ marginLeft:'auto', fontSize:'0.74rem', color:'#aaa' }}>
+                    {Object.keys(activeRates[cat] || {}).length} slots
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'center', fontSize:'1.5rem', padding:'0 8px' }}>
+            →
+          </div>
+          <div className="form-group">
+            <label>Copy TO</label>
+            <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+              {CATEGORIES.map(cat => (
+                <label key={cat} style={{ display:'flex', alignItems:'center', gap:8, cursor: copySrc===cat ? 'not-allowed' : 'pointer',
+                  padding:'8px 12px', border:`2px solid ${copyDst===cat && copySrc!==cat ? CAT_COLORS[cat] : '#e0e0e0'}`,
+                  borderRadius:6, background: copyDst===cat && copySrc!==cat ? `${CAT_COLORS[cat]}18` : copySrc===cat ? '#f5f5f5' : '#fafafa',
+                  fontWeight: copyDst===cat ? 700 : 400, opacity: copySrc===cat ? 0.4 : 1 }}>
+                  <input type="radio" name="copyDst" checked={copyDst===cat}
+                    onChange={() => setCopyDst(cat)} disabled={copySrc===cat} style={{ width:'auto' }} />
+                  <span style={{ color: copyDst===cat && copySrc!==cat ? CAT_COLORS[cat] : '#333', textTransform:'capitalize' }}>
+                    {cat}
+                  </span>
+                  {copySrc===cat && <span style={{ marginLeft:'auto', fontSize:'0.72rem', color:'#bbb' }}>source</span>}
+                </label>
+              ))}
+            </div>
+          </div>
+        </div>
+        {copySrc !== copyDst && (
+          <div style={{ marginTop:12, padding:'10px 14px', background:'#fff8e1', border:'1px solid #ffe082',
+            borderRadius:6, fontSize:'0.82rem', color:'#5d4037' }}>
+            ⚠️ This will <strong>overwrite all {copyDst} rates</strong> with {copySrc} rates.
+            You can still edit values after copying. Remember to click <strong>Save Rates</strong>.
+          </div>
+        )}
+      </Modal>
+
+      {/* ── AI Image Import Modal ── */}
+      <Modal show={aiModal} onClose={() => { setAiModal(false); setAiPreview(null) }}
+        title="🤖 AI Rates Image Import" wide
+        actions={
+          <>
+            <button className="btn btn-ghost" onClick={() => { setAiModal(false); setAiPreview(null) }}>Cancel</button>
+            {!aiPreview ? (
+              <label className={`btn btn-primary${groqStatus?.type==='loading' ? ' disabled' : ''}`}
+                style={{ cursor: groqStatus?.type==='loading' ? 'not-allowed' : 'pointer' }}>
+                {groqStatus?.type==='loading' ? '⏳ Scanning…' : '📷 Choose Image'}
+                <input ref={aiFileRef} type="file" accept="image/*" style={{ display:'none' }}
+                  onChange={handleAIUpload} disabled={groqStatus?.type==='loading'} />
+              </label>
+            ) : (
+              <button className="btn btn-primary" onClick={applyAIRates}>
+                {aiTarget==='current' ? '✅ Apply to Rates Now' : '⏰ Save as Scheduled'}
+              </button>
+            )}
+          </>
+        }
+      >
+        <p style={{ color:'#666', fontSize:'0.83rem', marginBottom:14 }}>
+          Upload a photo of your printed rates sheet. AI reads the table and auto-fills all slots —
+          including custom ones like Weekly and Monthly. Works best with good lighting and a flat angle.
+        </p>
+
+        {/* Category */}
+        <div className="form-group">
+          <label>Category to update</label>
+          <div style={{ display:'flex', gap:6 }}>
+            {CATEGORIES.map(cat => (
+              <button key={cat}
+                className={`btn ${aiCategory===cat ? 'btn-primary' : 'btn-outline'}`}
+                style={{ flex:1, textTransform:'capitalize',
+                  ...(aiCategory===cat ? { background: CAT_COLORS[cat], borderColor: CAT_COLORS[cat] } : {}) }}
+                onClick={() => { setAiCategory(cat); setAiPreview(null) }}>
+                {cat}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Target */}
+        <div className="form-group">
+          <label>Where to apply the rates</label>
+          <div style={{ display:'flex', gap:6 }}>
+            <button className={`btn ${aiTarget==='current' ? 'btn-primary' : 'btn-outline'}`}
+              style={{ flex:1 }} onClick={() => setAiTarget('current')}>
+              ✏️ Update Rates Now
+            </button>
+            <button className={`btn ${aiTarget==='scheduled' ? 'btn-primary' : 'btn-outline'}`}
+              style={{ flex:1 }} onClick={() => setAiTarget('scheduled')}>
+              ⏰ Save as Scheduled
+            </button>
+          </div>
+          <small style={{ color:'#888', marginTop:4, display:'block' }}>
+            {aiTarget==='current'
+              ? 'Fills the table immediately — still need to click Save Rates to persist.'
+              : 'Stored in Firestore and auto-applies at your chosen date/time. No manual action needed.'}
+          </small>
+        </div>
+
+        {/* Scheduled fields */}
+        {aiTarget==='scheduled' && (
+          <>
+            <div className="form-group">
+              <label>Schedule Label</label>
+              <input type="text" placeholder="e.g. Proposed Weekday Rates May 2025"
+                value={aiSchedLabel} onChange={e => setAiSchedLabel(e.target.value)} />
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label>Apply Date</label>
+                <input type="date" value={aiSchedDate} onChange={e => setAiSchedDate(e.target.value)} />
+              </div>
+              <div className="form-group">
+                <label>Apply Time</label>
+                <input type="time" value={aiSchedTime} onChange={e => setAiSchedTime(e.target.value)} />
+              </div>
+            </div>
+            <div style={{ padding:'8px 12px', background:'#e8f5e9', border:'1px solid #c8e6c9',
+              borderRadius:6, fontSize:'0.8rem', color:'#2e7d32' }}>
+              ⚡ Will <strong>auto-apply</strong> at the scheduled time and delete itself from the queue.
+              No manual click needed — check Rate History to confirm it was applied.
+            </div>
+          </>
+        )}
+
+        {/* Drop zone */}
+        {!aiPreview && groqStatus?.type !== 'loading' && (
+          <label style={{ display:'block', border:'2px dashed #ddd', borderRadius:8,
+            padding:'28px 16px', textAlign:'center', background:'#fafafa', cursor:'pointer', marginTop:8 }}>
+            <div style={{ fontSize:'2rem', marginBottom:8 }}>📷</div>
+            <p style={{ color:'#888', fontSize:'0.83rem', margin:0 }}>
+              Click <strong>"Choose Image"</strong> below, or tap here to browse
+            </p>
+            <p style={{ color:'#aaa', fontSize:'0.76rem', marginTop:4 }}>
+              JPG, PNG, HEIC · Any slot name is recognised — 2HRS, 24HRS, Weekly, Monthly, etc.
+            </p>
+            <input type="file" accept="image/*" style={{ display:'none' }}
+              onChange={handleAIUpload} disabled={groqStatus?.type==='loading'} />
+          </label>
+        )}
+
+        {/* Scanning indicator */}
+        {groqStatus?.type === 'loading' && (
+          <div style={{ textAlign:'center', padding:'24px 0', color:'#1e40af', fontSize:'0.85rem' }}>
+            <div style={{ width:28, height:28, border:'3px solid #bfdbfe', borderTopColor:'#1e40af',
+              borderRadius:'50%', animation:'spin 0.7s linear infinite', margin:'0 auto 12px' }} />
+            Reading your rates sheet with AI…
+          </div>
+        )}
+
+        {/* Preview table */}
+        {aiPreview && (
+          <div style={{ marginTop:8 }}>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
+              <strong style={{ fontSize:'0.86rem' }}>
+                👁 Preview — {aiPreview.summary.category.toUpperCase()} Rates
+              </strong>
+              <button className="btn btn-ghost" style={{ fontSize:'0.74rem', padding:'3px 10px' }}
+                onClick={() => setAiPreview(null)}>✕ Re-upload</button>
+            </div>
+
+            {/* Summary badges */}
+            <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:10 }}>
+              <span style={{ background:'#d4edda', color:'#155724', borderRadius:6, padding:'2px 8px', fontSize:'0.74rem', fontWeight:700 }}>
+                ✅ {aiPreview.summary.matchedSlots} slots matched
+              </span>
+              <span style={{ background:'#d4edda', color:'#155724', borderRadius:6, padding:'2px 8px', fontSize:'0.74rem', fontWeight:700 }}>
+                ✅ {aiPreview.summary.matchedRooms}/{aiPreview.summary.totalRooms} room types matched
+              </span>
+              {aiPreview.summary.unmappedRooms?.length > 0 && (
+                <span style={{ background:'#fff3cd', color:'#856404', borderRadius:6, padding:'2px 8px', fontSize:'0.74rem', fontWeight:700 }}>
+                  ⚠️ Unmatched rooms: {aiPreview.summary.unmappedRooms.join(', ')}
+                </span>
+              )}
+              {aiPreview.summary.unmappedSlots?.length > 0 && (
+                <span style={{ background:'#fff3cd', color:'#856404', borderRadius:6, padding:'2px 8px', fontSize:'0.74rem', fontWeight:700 }}>
+                  ⚠️ Unmatched slots: {aiPreview.summary.unmappedSlots.join(', ')}
+                </span>
+              )}
+            </div>
+
+            {/* Rate preview table */}
+            <div style={{ overflowX:'auto', maxHeight:300, overflowY:'auto' }}>
+              <table style={{ borderCollapse:'collapse', fontSize:'0.77rem', width:'100%' }}>
+                <thead>
+                  <tr>
+                    <th style={{ padding:'5px 10px', background:'#444', color:'#fff', border:'1px solid #ddd',
+                      textAlign:'left', position:'sticky', top:0, whiteSpace:'nowrap' }}>Slot</th>
+                    {activeRTypes.map(rt => (
+                      <th key={rt} style={{ padding:'5px 8px', background:'#444', color:'#fff',
+                        border:'1px solid #ddd', textAlign:'center', position:'sticky', top:0, whiteSpace:'nowrap' }}>
+                        {rt}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(aiPreview.rates[aiPreview.summary.category]).map(([slot, vals]) => (
+                    <tr key={slot}>
+                      <td style={{ padding:'4px 10px', border:'1px solid #ddd', fontWeight:700, whiteSpace:'nowrap' }}>
+                        {slot.replace(/_\d+$/, '')}
+                      </td>
+                      {vals.map((v, i) => {
+                        const old     = Number(activeRates[aiPreview.summary.category]?.[slot]?.[i]) || 0
+                        const changed = v !== null && v !== old
+                        const diff    = v !== null ? v - old : 0
+                        return (
+                          <td key={i} style={{
+                            padding:'4px 8px', border:'1px solid #ddd', textAlign:'center',
+                            background: v===null ? '#f9f9f9' : changed ? '#d4edda' : undefined,
+                            color:      v===null ? '#ccc'    : changed ? '#155724' : '#333',
+                            fontWeight: changed ? 800 : 400,
+                          }}>
+                            {v===null ? '—' : `₱${Number(v).toLocaleString()}`}
+                            {changed && old > 0 && (
+                              <div style={{ fontSize:'0.6rem', color: diff>0?'#27ae60':'#c0392b', fontWeight:700 }}>
+                                {diff>0 ? `+${diff.toLocaleString()}` : diff.toLocaleString()}
+                              </div>
+                            )}
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p style={{ color:'#888', fontSize:'0.76rem', marginTop:8 }}>
+              Green = changed from current. Review before applying.
+            </p>
+          </div>
+        )}
+      </Modal>
+
     </div>
   )
 }
