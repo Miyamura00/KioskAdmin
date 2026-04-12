@@ -145,7 +145,7 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
       const t = setTimeout(() => {
         applyEntry(entry, true)
         timers.delete(entry.id)
-      }, msUntil + 500)
+      }, msUntil + 100)
       timers.set(entry.id, t)
     }
 
