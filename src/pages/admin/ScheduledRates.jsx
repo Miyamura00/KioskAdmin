@@ -126,11 +126,29 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
   const [saving,       setSaving]       = useState(false)
   const [expandedAdj,  setExpandedAdj]  = useState(0)
 
-  // ── Realtime listener + auto-apply on a 30s tick ──────────
+  // ── Realtime listener + precise per-entry timers ───────────
   useEffect(() => {
     if (!branchId) { setScheduled([]); return }
 
-    // Listen in realtime — data stays fresh without manual refresh
+    // Track per-entry timers so we can clear them on unmount / re-render
+    const timers = new Map()
+
+    function scheduleTimer(entry) {
+      if (timers.has(entry.id)) return   // already scheduled
+      const msUntil = new Date(entry.applyAt) - Date.now()
+      if (msUntil <= 0) {
+        // Already overdue — apply immediately
+        applyEntry(entry, true)
+        return
+      }
+      // Fire at the exact moment it's due (+ 500 ms buffer for clock drift)
+      const t = setTimeout(() => {
+        applyEntry(entry, true)
+        timers.delete(entry.id)
+      }, msUntil + 500)
+      timers.set(entry.id, t)
+    }
+
     const unsub = db
       .collection('branches').doc(branchId)
       .collection('scheduledRates')
@@ -139,27 +157,25 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
         const entries = snap.docs
           .map(d => ({ id: d.id, ...d.data() }))
           .filter(e => e.mode === mode && e.status === 'pending')
+
         setScheduled(entries)
-        // Immediately apply anything that's overdue when data arrives
-        entries.forEach(e => { if (isPast(e.applyAt)) applyEntry(e, true) })
+
+        // Cancel timers for entries that no longer exist (cancelled/deleted)
+        const liveIds = new Set(entries.map(e => e.id))
+        timers.forEach((t, id) => {
+          if (!liveIds.has(id)) { clearTimeout(t); timers.delete(id) }
+        })
+
+        // Set a precise timer for each pending entry
+        entries.forEach(scheduleTimer)
+
       }, err => console.error('scheduledRates snapshot:', err))
 
-    // Also tick every 30 s so entries due while page is open get applied promptly
-    const tick = setInterval(async () => {
-      try {
-        const snap = await db.collection('branches').doc(branchId)
-          .collection('scheduledRates')
-          .where('mode', '==', mode)
-          .where('status', '==', 'pending')
-          .get()
-        for (const doc of snap.docs) {
-          const e = { id: doc.id, ...doc.data() }
-          if (isPast(e.applyAt)) await applyEntry(e, true)
-        }
-      } catch (err) { console.error('tick apply:', err) }
-    }, 30_000)
-
-    return () => { unsub(); clearInterval(tick) }
+    return () => {
+      unsub()
+      timers.forEach(t => clearTimeout(t))
+      timers.clear()
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [branchId, mode])
 
