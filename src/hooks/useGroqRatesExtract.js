@@ -1,62 +1,42 @@
 // src/hooks/useGroqRatesExtract.js
-// FREE Groq vision API — https://console.groq.com (no credit card)
-// .env: VITE_GROQ_API_KEY=gsk_...
-
 import { useState } from 'react'
 
 const GROQ_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct'
 const GROQ_URL   = 'https://api.groq.com/openai/v1/chat/completions'
 const GROQ_KEY   = import.meta.env.VITE_GROQ_API_KEY || ''
 
-// ── Adaptive slot normalization ──────────────────────────────────────────────
-// No hardcoded aliases — works with ANY slot name (weekly, monthly, etc.)
-
+// ── Slot normalization ───────────────────────────────────────────────────────
 function normSlot(s) {
   return String(s || '')
-    .toUpperCase()
-    .trim()
-    .replace(/\s+/g, '')                     // remove all spaces
-    .replace(/HOURS?$/,  'HRS')              // HOURS/HOUR → HRS
-    .replace(/^(\d+)H$/, '$1HRS')            // 24H → 24HRS
-    .replace(/^(\d+)HR$/, '$1HRS')           // 24HR → 24HRS
-    .replace(/_\d+$/, '')                    // strip duplicate suffix _2 _3
+    .toUpperCase().trim()
+    .replace(/\s+/g, '')
+    .replace(/HOURS?$/, 'HRS')
+    .replace(/^(\d+)H$/, '$1HRS')
+    .replace(/^(\d+)HR$/, '$1HRS')
+    .replace(/_\d+$/, '')
 }
-
 function extractNumber(s) {
   const m = String(s || '').match(/(\d+)/)
   return m ? parseInt(m[1]) : null
 }
-
-// Returns the best matching system slot key for an AI-extracted slot name.
-// Works dynamically against whatever slots the branch has configured.
 function matchSlotKey(extracted, systemSlots) {
   const ne = normSlot(extracted)
-
-  // 1. Exact normalized match (strips _2 _3 suffixes from system keys)
   const exact = systemSlots.find(s => normSlot(s) === ne)
   if (exact) return exact
-
-  // 2. Partial contains match — e.g. "10HRS ONP" contains "ONP"
   const contains = systemSlots.find(s => {
     const ns = normSlot(s)
     return ns.includes(ne) || ne.includes(ns)
   })
   if (contains) return contains
-
-  // 3. Number + keyword match — e.g. extracted "24 HOURS" matches system "24HRS"
-  //    and extracted "WEEKLY" matches system "WEEKLY"
   const numE = extractNumber(ne)
   const numMatch = systemSlots.find(s => {
     const ns = normSlot(s)
     const numS = extractNumber(ns)
     return numE !== null && numS !== null && numE === numS &&
-      (ne.replace(/\d+/, '') === ns.replace(/\d+/, '') || // same unit suffix
+      (ne.replace(/\d+/, '') === ns.replace(/\d+/, '') ||
        ne.startsWith(String(numE)) || ns.startsWith(String(numS)))
   })
   if (numMatch) return numMatch
-
-  // 4. Word-based fuzzy — split multi-word slot names and check keyword overlap
-  //    e.g. "10HRS ONP" ↔ "10HRS OVERNIGHT"
   const wordsE = ne.split(/\b/)
   const wordMatch = systemSlots.find(s => {
     const wordsS = normSlot(s).split(/\b/)
@@ -66,37 +46,84 @@ function matchSlotKey(extracted, systemSlots) {
   return wordMatch || null
 }
 
-// ── Room type matching (unchanged) ──────────────────────────────────────────
+// ── Room type normalization ──────────────────────────────────────────────────
 function normRoom(n) {
   return String(n || '').toLowerCase().replace(/[\s_\-.]/g, '')
 }
-function matchRoomType(extracted, systemRooms) {
-  const ne = normRoom(extracted)
-  const exact = systemRooms.findIndex(r => normRoom(r) === ne)
-  if (exact !== -1) return exact
-  return systemRooms.findIndex(r => ne.includes(normRoom(r)) || normRoom(r).includes(ne))
+
+// Similarity score between two normalized room strings (0 = no match, 1 = identical)
+function roomSimilarity(a, b) {
+  if (a === b) return 1
+  const longer  = a.length >= b.length ? a : b
+  const shorter = a.length >= b.length ? b : a
+  if (!longer.includes(shorter)) return 0
+  return shorter.length / longer.length
 }
 
-// ── Build prompt — tells AI exactly what slots exist in this branch ──────────
+// ── Global room assignment ───────────────────────────────────────────────────
+// Resolves ALL extracted rooms → system rooms together so no two extracted
+// rooms steal the same system room. Uses a greedy best-score approach:
+// highest-confidence pairs are locked in first.
+function buildRoomIdxMap(extractedRooms, systemRooms) {
+  const normExtracted = extractedRooms.map(normRoom)
+  const normSystem    = systemRooms.map(normRoom)
+
+  // Build full score matrix
+  const scores = normExtracted.map(ne =>
+    normSystem.map(ns => roomSimilarity(ne, ns))
+  )
+
+  // Collect all (extractedIdx, systemIdx, score) pairs with score > 0
+  const pairs = []
+  scores.forEach((row, ei) =>
+    row.forEach((score, si) => { if (score > 0) pairs.push({ ei, si, score }) })
+  )
+
+  // Sort by score descending — highest confidence first
+  pairs.sort((a, b) => b.score - a.score)
+
+  const roomIdxMap  = {}   // extractedIdx → systemIdx
+  const usedSystem  = new Set()
+  const usedExtract = new Set()
+
+  for (const { ei, si, score } of pairs) {
+    if (usedExtract.has(ei) || usedSystem.has(si)) continue
+    roomIdxMap[ei] = si
+    usedSystem.add(si)
+    usedExtract.add(ei)
+  }
+
+  return roomIdxMap
+}
+
+// ── Build prompt ─────────────────────────────────────────────────────────────
 function buildPrompt(category, systemSlots, systemRooms) {
   const allSlots = [...new Set(Object.values(systemSlots).flat())]
-    .map(s => s.replace(/_\d+$/, ''))  // strip _2 _3 suffixes for display
+    .map(s => s.replace(/_\d+$/, ''))
 
   return `Extract ${category.toUpperCase()} hotel/motel rates from this image.
 
 This branch has these time slots configured: ${allSlots.join(', ')}
 This branch has these room types: ${systemRooms.join(', ')}
 
-IMPORTANT: Use EXACTLY the slot names listed above when they match what you see in the image.
-If the image has a slot not in the list (e.g. WEEKLY, MONTHLY), still include it using the exact name from the image.
+CRITICAL ROOM TYPE RULES:
+1. Copy room type names EXACTLY as written in the image — do NOT shorten or abbreviate.
+   WRONG: image says "Executive Garage" → you write "Executive"
+   RIGHT: image says "Executive Garage" → you write "Executive Garage"
+   WRONG: image says "Concept Regency 2" → you write "Regency 2"
+   RIGHT: image says "Concept Regency 2" → you write "Concept Regency 2"
+2. Every column in the image is a separate room type — never skip or merge columns.
+3. Match to the list above only when the name is identical.
+
+IMPORTANT: Use EXACTLY the slot names listed above when they match what you see.
+If the image has a slot not in the list (e.g. WEEKLY, MONTHLY), include it using the exact name from the image.
 
 Return ONLY valid JSON — no markdown, no backticks, no explanation:
 {
-  "roomTypes": ["Econo", "Premium", "De Luxe"],
+  "roomTypes": ["Econo", "Premium", "Executive", "Executive Garage"],
   "slots": {
-    "24HRS": [1160, 1840, 1890],
-    "12HRS": [1000, 1190, 1070],
-    "WEEKLY": [5000, 6000, 7000]
+    "24HRS": [1160, 1840, 1890, 2100],
+    "12HRS": [1000, 1190, 1070, 1300]
   }
 }
 
@@ -104,7 +131,7 @@ Rules:
 - roomTypes defines the column ORDER — each slot array must match this order exactly
 - Use null for empty, dash, or missing cells
 - Numbers only — no peso signs or commas
-- Include ALL rows you can see in the image, including weekly, monthly, or any custom slots`
+- Include ALL rows visible in the image`
 }
 
 // ── Main hook ────────────────────────────────────────────────────────────────
@@ -148,31 +175,37 @@ export function useGroqRatesExtract() {
 
       const data   = await resp.json()
       const text   = data.choices?.[0]?.message?.content || ''
+
+      // Debug — check browser console to see exactly what Groq returned
+      // console.log('[useGroqRatesExtract] raw Groq response:', text)
+
       const parsed = JSON.parse(text.replace(/```json|```/g, '').trim())
+
+      // console.log('[useGroqRatesExtract] parsed roomTypes:', parsed.roomTypes)
+      // console.log('[useGroqRatesExtract] systemRooms:', systemRooms)
 
       const extractedRooms = parsed.roomTypes || []
       const extractedSlots = parsed.slots     || {}
       const catSlots       = systemSlots[category] || []
 
-      // Map extracted room indices → system room indices
-      const roomIdxMap = {}
-      extractedRooms.forEach((er, ei) => {
-        const si = matchRoomType(er, systemRooms)
-        if (si !== -1) roomIdxMap[ei] = si
-      })
+      // ── Resolve ALL room mappings globally (no greedy stealing) ──
+      const roomIdxMap = buildRoomIdxMap(extractedRooms, systemRooms)
+
+      // console.log('[useGroqRatesExtract] roomIdxMap:', 
+      //   Object.entries(roomIdxMap).map(([ei, si]) => 
+      //     `"${extractedRooms[ei]}" → "${systemRooms[si]}"`
+      //   )
+      // )
 
       // Map extracted slot names → system slot keys, build rate arrays
-      const catRates     = {}
-      let   matchedSlots = 0
-      const matchedRooms = new Set()
+      const catRates      = {}
+      let   matchedSlots  = 0
+      const matchedRooms  = new Set()
       const unmappedSlots = []
 
       for (const [extractedSlot, values] of Object.entries(extractedSlots)) {
         const slotKey = matchSlotKey(extractedSlot, catSlots)
-        if (!slotKey) {
-          unmappedSlots.push(extractedSlot)
-          continue
-        }
+        if (!slotKey) { unmappedSlots.push(extractedSlot); continue }
         const arr = Array(systemRooms.length).fill(null)
         values.forEach((val, ei) => {
           const si = roomIdxMap[ei]
@@ -193,8 +226,8 @@ export function useGroqRatesExtract() {
       }
 
       let msg = `Extracted ${matchedSlots} slot(s) × ${matchedRooms.size} room type(s).`
-      if (unmappedRooms.length)  msg += ` ⚠️ Unmatched rooms: ${unmappedRooms.join(', ')}`
-      if (unmappedSlots.length)  msg += ` ⚠️ Unmatched slots: ${unmappedSlots.join(', ')}`
+      if (unmappedRooms.length) msg += ` ⚠️ Unmatched rooms: ${unmappedRooms.join(', ')}`
+      if (unmappedSlots.length) msg += ` ⚠️ Unmatched slots: ${unmappedSlots.join(', ')}`
 
       setGroqStatus({ type: 'success', message: msg })
       setTimeout(() => setGroqStatus(null), 7000)
