@@ -1,10 +1,10 @@
 // src/components/Modal.jsx
-
-
+import { createPortal } from 'react-dom'
 
 export function Modal({ show, onClose, title, children, actions, wide }) {
   if (!show) return null
-  return (
+
+  return createPortal(
     <div
       className="modal-overlay"
       onClick={(e) => e.target === e.currentTarget && onClose()}
@@ -19,6 +19,7 @@ export function Modal({ show, onClose, title, children, actions, wide }) {
         <div className="modal-body">{children}</div>
         {actions && <div className="modal-actions">{actions}</div>}
       </div>
-    </div>
+    </div>,
+    document.body   // ← renders outside page-content scroll container
   )
 }

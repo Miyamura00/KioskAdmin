@@ -10,6 +10,7 @@ import { Branches }    from './pages/admin/Branches'
 import { Users }       from './pages/admin/Users'
 import { AuditLog }    from './pages/admin/AuditLog'
 import { Settings }    from './pages/admin/Settings'
+import { DataBackup }  from './pages/admin/DataBackup'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { AdminProvider }  from './context/AdminContext'
 
@@ -36,6 +37,7 @@ function App() {
         <Route path="holidays"    element={<Holidays />} />
         <Route path="audit"       element={<AuditLog />} />
         <Route path="settings"    element={<Settings />} />
+        <Route path="backup"      element={<DataBackup />} />
         <Route path="branches"    element={
           <ProtectedRoute minRole="superadmin"><Branches /></ProtectedRoute>
         } />

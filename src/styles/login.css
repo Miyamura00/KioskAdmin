@@ -1,112 +1,464 @@
-/* src/styles/login.css */
+/* src/styles/login.css — KioskAdmin v2 · Admin Console Auth */
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+@import "tailwindcss";
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+:root {
+  --navy-900: #0d2347;
+  --navy-800: #0d2b5e;
+  --navy-700: #133580;
+  --navy-600: #1a4fa0;
+  --navy-500: #2563c4;
+  --navy-400: #4a80d4;
+  --navy-300: #7aa8e4;
+  --navy-200: #b5ccef;
+  --navy-100: #dce6f7;
+  --navy-50:  #f0f5fc;
+  --border:   #dce4ef;
+  --danger:   #b91c1c;
+}
+
+/* ══════════════════════════════════════════════════════
+   ADMIN AUTH PAGE LOADER
+   Full-screen loader shown BEFORE the login card appears
+   while the admin app/Firebase is initializing.
+   This is separate from any kiosk loader.
+══════════════════════════════════════════════════════ */
+.admin-auth-loader {
+  position: fixed;
+  inset: 0;
+  background: var(--navy-900);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  gap: 32px;
+  /* Fade out when removed */
+  animation: authLoaderIn 0.3s ease both;
+}
+
+@keyframes authLoaderIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Geometric background — admin feel, not kiosk */
+.admin-auth-loader::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 70% 55% at 20% 80%, rgba(37,99,196,0.22) 0%, transparent 55%),
+    radial-gradient(ellipse 50% 50% at 80% 18%, rgba(19,53,128,0.18) 0%, transparent 55%);
+  pointer-events: none;
+}
+
+/* Subtle grid lines */
+.admin-auth-loader::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.022) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.022) 1px, transparent 1px);
+  background-size: 52px 52px;
+  pointer-events: none;
+}
+
+.admin-auth-loader-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 28px;
+}
+
+/* Brand mark */
+.aal-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.aal-icon {
+  width: 52px;
+  height: 52px;
+  background: linear-gradient(135deg, var(--navy-600), var(--navy-500));
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.6rem;
+  box-shadow:
+    0 4px 20px rgba(37, 99, 196, 0.45),
+    0 0 0 1px rgba(74, 128, 212, 0.2);
+  animation: aalIconPulse 2.4s ease-in-out infinite;
+}
+
+@keyframes aalIconPulse {
+  0%, 100% { box-shadow: 0 4px 20px rgba(37,99,196,0.45), 0 0 0 1px rgba(74,128,212,0.2); }
+  50%       { box-shadow: 0 4px 28px rgba(37,99,196,0.65), 0 0 0 4px rgba(74,128,212,0.12); }
+}
+
+.aal-text { display: flex; flex-direction: column; }
+
+.aal-name {
+  font-size: 1.35rem;
+  font-weight: 800;
+  color: #ffffff;
+  letter-spacing: -0.3px;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+}
+
+.aal-sub {
+  font-size: 0.65rem;
+  color: var(--navy-300);
+  text-transform: uppercase;
+  letter-spacing: 1.8px;
+  font-weight: 700;
+  margin-top: 3px;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+}
+
+/* Spinner — admin style (clean ring, not kiosk-style) */
+.aal-spinner-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+.aal-spinner {
+  width: 40px;
+  height: 40px;
+  position: relative;
+}
+
+.aal-spinner::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.08);
+}
+
+.aal-spinner::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 3px solid transparent;
+  border-top-color: var(--navy-400);
+  border-right-color: rgba(74, 128, 212, 0.35);
+  animation: aalSpin 0.85s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+}
+
+@keyframes aalSpin { to { transform: rotate(360deg); } }
+
+.aal-status {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: rgba(122, 168, 228, 0.7);
+  letter-spacing: 0.4px;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+}
+
+/* Animated progress bar under spinner */
+.aal-bar-track {
+  width: 160px;
+  height: 2px;
+  background: rgba(255,255,255,0.07);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.aal-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--navy-500), var(--navy-300), var(--navy-500));
+  background-size: 200% 100%;
+  border-radius: 2px;
+  animation: aalBarMove 1.8s ease-in-out infinite;
+}
+
+@keyframes aalBarMove {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+
+/* Version tag */
+.aal-version {
+  position: absolute;
+  bottom: 24px;
+  font-size: 0.68rem;
+  color: rgba(255,255,255,0.2);
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  z-index: 1;
+}
+
+/* ══════════════════════════════════════════════════════
+   LOGIN PAGE BACKGROUND
+══════════════════════════════════════════════════════ */
 .login-bg {
   min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #700909 0%, #d10c0c 100%);
-  font-family: 'Segoe UI', Arial, sans-serif;
+  font-family: 'Plus Jakarta Sans', 'Segoe UI', system-ui, sans-serif;
+  background: var(--navy-900);
+  position: relative;
+  overflow: hidden;
 }
 
+/* Background radial glows */
+.login-bg::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 70% 60% at 20% 80%, rgba(37,99,196,0.25) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 50% at 80% 20%, rgba(26,79,160,0.2) 0%, transparent 60%);
+  pointer-events: none;
+}
+
+/* Grid lines */
+.login-bg::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.024) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.024) 1px, transparent 1px);
+  background-size: 48px 48px;
+  pointer-events: none;
+}
+
+/* ══════════════════════════════════════════════════════
+   LOGIN CARD
+══════════════════════════════════════════════════════ */
 .login-card {
-  background: white;
-  border-radius: 14px;
-  padding: 48px 40px 40px;
+  background: #ffffff;
+  border-radius: 20px;
+  padding: 48px 44px 44px;
   width: 100%;
-  max-width: 400px;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+  max-width: 420px;
+  box-shadow:
+    0 32px 80px rgba(6,21,41,0.4),
+    0 0 0 1px rgba(255,255,255,0.06);
   text-align: center;
+  position: relative;
+  z-index: 1;
+  animation: cardIn 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-.login-badge {
-  display: inline-block;
-  background: #f3f32a;
-  color: #700909;
-  font-weight: 900;
-  font-size: 0.75rem;
-  letter-spacing: 2px;
-  padding: 4px 14px;
-  border-radius: 20px;
-  margin-bottom: 18px;
+@keyframes cardIn {
+  from { transform: translateY(24px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+.login-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 28px;
+}
+
+.login-logo img {
+  height: 52px;
+  width: auto;
+  object-fit: contain;
+}
+
+.login-divider {
+  width: 40px;
+  height: 2px;
+  background: var(--navy-100);
+  border-radius: 2px;
+  margin: 0 auto 24px;
 }
 
 .login-title {
-  font-size: 1.6rem;
-  color: #700909;
-  font-weight: 900;
+  font-size: 1.45rem;
+  color: var(--navy-800);
+  font-weight: 800;
   margin-bottom: 6px;
+  letter-spacing: -0.3px;
 }
 
 .login-sub {
-  color: #888;
-  font-size: 0.88rem;
+  color: #8699b0;
+  font-size: 0.86rem;
+  font-weight: 500;
   margin-bottom: 32px;
 }
 
 .login-field {
   text-align: left;
-  margin-bottom: 18px;
+  margin-bottom: 16px;
 }
 
 .login-field label {
   display: block;
-  font-size: 0.8rem;
+  font-size: 0.72rem;
   font-weight: 700;
-  color: #555;
-  margin-bottom: 6px;
+  color: #4a5e78;
+  margin-bottom: 7px;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.6px;
 }
 
 .login-field input {
   width: 100%;
-  padding: 12px 14px;
-  border: 2px solid #e0e0e0;
+  padding: 11px 14px;
+  border: 1.5px solid var(--border);
   border-radius: 8px;
-  font-size: 1rem;
-  transition: border-color 0.2s;
+  font-size: 0.92rem;
+  font-family: inherit;
+  transition: border-color 0.2s, box-shadow 0.2s;
   outline: none;
+  color: #0d1e36;
+  background: #fff;
 }
 
-.login-field input:focus { border-color: #d10c0c; }
+.login-field input:focus {
+  border-color: var(--navy-500);
+  box-shadow: 0 0 0 3px rgba(37, 99, 196, 0.12);
+}
 
+/* ── Login button — normal state ── */
 .login-btn {
   width: 100%;
-  padding: 14px;
-  background: #d10c0c;
+  padding: 13px;
+  background: var(--navy-700);
   color: white;
   border: none;
   border-radius: 8px;
-  font-size: 1rem;
+  font-size: 0.9rem;
   font-weight: 800;
   cursor: pointer;
-  letter-spacing: 1px;
-  margin-top: 8px;
-  transition: background 0.2s;
+  letter-spacing: 0.3px;
+  margin-top: 10px;
+  transition: background 0.2s, box-shadow 0.2s, transform 0.15s;
+  font-family: inherit;
+  position: relative;
+  overflow: hidden;
 }
 
-.login-btn:hover:not(:disabled) { background: #700909; }
-.login-btn:disabled { background: #ccc; cursor: not-allowed; }
+.login-btn:hover:not(:disabled) {
+  background: var(--navy-600);
+  box-shadow: 0 4px 16px rgba(26, 79, 160, 0.3);
+  transform: translateY(-1px);
+}
 
+.login-btn:active:not(:disabled) { transform: translateY(0); }
+
+/* ── Loading state — admin console style ──
+   Add class "loading" to .login-btn when authenticating.
+   Shows an inline spinner + shimmer, distinct from kiosk loader. */
+.login-btn.loading {
+  background: var(--navy-800);
+  cursor: not-allowed;
+  pointer-events: none;
+  color: transparent; /* hide original text */
+}
+
+/* Shimmer sweep */
+.login-btn.loading::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 30%,
+    rgba(255,255,255,0.07) 50%,
+    transparent 70%
+  );
+  background-size: 200% 100%;
+  animation: btnShimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes btnShimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+
+/* Spinner inside button */
+.login-btn.loading::after {
+  content: '';
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2.5px solid rgba(255,255,255,0.18);
+  border-top-color: rgba(255,255,255,0.85);
+  animation: btnSpin 0.8s linear infinite;
+}
+
+@keyframes btnSpin { to { transform: translate(-50%, -50%) rotate(360deg); } }
+
+.login-btn:disabled:not(.loading) {
+  background: #c4d0e3;
+  cursor: not-allowed;
+}
+
+/* ── Error state ── */
 .login-error {
-  background: #ffe5e5;
-  color: #c0392b;
-  border: 1px solid #f5c6cb;
-  border-radius: 6px;
+  background: #fef2f2;
+  color: var(--danger);
+  border: 1px solid #fecaca;
+  border-radius: 7px;
   padding: 10px 14px;
-  font-size: 0.875rem;
+  font-size: 0.84rem;
+  font-weight: 600;
   margin-top: 14px;
   text-align: left;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
 }
 
 .login-back {
   display: block;
-  margin-top: 20px;
-  color: #aaa;
-  font-size: 0.82rem;
+  margin-top: 22px;
+  color: #8699b0;
+  font-size: 0.8rem;
+  font-weight: 600;
   text-decoration: none;
+  transition: color 0.2s;
 }
 
-.login-back:hover { color: #700909; }
+.login-back:hover { color: var(--navy-600); }
+
+/* Footer text at page bottom */
+.login-footer {
+  position: absolute;
+  bottom: 28px;
+  left: 0; right: 0;
+  text-align: center;
+  font-size: 0.72rem;
+  color: rgba(255,255,255,0.25);
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  z-index: 1;
+}
+
+/* ══════════════════════════════════════════════════════
+   RESPONSIVE
+══════════════════════════════════════════════════════ */
+@media (max-width: 480px) {
+  .login-card {
+    border-radius: 14px;
+    padding: 36px 24px 32px;
+    margin: 16px;
+    max-width: none;
+    width: auto;
+  }
+
+  .aal-name  { font-size: 1.15rem; }
+  .aal-icon  { width: 44px; height: 44px; font-size: 1.35rem; }
+}

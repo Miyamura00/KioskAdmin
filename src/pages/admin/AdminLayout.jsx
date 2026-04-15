@@ -1,23 +1,25 @@
 // src/pages/admin/AdminLayout.jsx
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth }  from '../../context/AuthContext'
 import { useAdmin } from '../../context/AdminContext'
 import { auth }     from '../../firebase/config'
+import { useAutoBackup } from '../../hooks/useAutoBackup'
 import '../../styles/admin.css'
 
 const NAV_ITEMS = [
-  { path:'/admin',           label:'Dashboard',        icon:'📊' },
-  { path:'/admin/rates',     label:'Rate Management',  icon:'💰' },
-  { path:'/admin/holidays',  label:'Holiday Schedule', icon:'📅' },
-  { path:'/admin/audit',     label:'Audit Trail',      icon:'📋' },
+  { path: '/admin',          label: 'Dashboard',        icon: '📊' },
+  { path: '/admin/rates',    label: 'Rate Management',  icon: '💰' },
+  { path: '/admin/holidays', label: 'Holiday Schedule', icon: '📅' },
+  { path: '/admin/audit',    label: 'Audit Trail',      icon: '📋' },
+  { path: '/admin/backup',   label: 'Data Backup',      icon: '📦' },
 ]
 const SUPER_ITEMS = [
-  { path:'/admin/branches',  label:'Branches', icon:'🏢' },
-  { path:'/admin/users',     label:'Users',    icon:'👥' },
+  { path: '/admin/branches', label: 'Branches', icon: '🏢' },
+  { path: '/admin/users',    label: 'Users',    icon: '👥' },
 ]
 const BOTTOM_ITEMS = [
-  { path:'/admin/settings',  label:'My Settings', icon:'⚙️' },
+  { path: '/admin/settings', label: 'My Settings', icon: '⚙️' },
 ]
 const PAGE_TITLES = {
   '/admin':          'Dashboard',
@@ -27,9 +29,42 @@ const PAGE_TITLES = {
   '/admin/users':    'User Management',
   '/admin/audit':    'Audit Trail',
   '/admin/settings': 'My Settings',
+  '/admin/backup':   'Data Backup',
 }
 
-// ── Searchable branch dropdown ────────────────────────────
+// ── SVG Icons ──────────────────────────────────────────────
+function IconMenu() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+      <rect x="2" y="3.5"  width="14" height="1.75" rx="0.875" fill="currentColor"/>
+      <rect x="2" y="8.1"  width="14" height="1.75" rx="0.875" fill="currentColor"/>
+      <rect x="2" y="12.7" width="14" height="1.75" rx="0.875" fill="currentColor"/>
+    </svg>
+  )
+}
+
+function IconSignOut() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
+      <path d="M5.5 13H3a1 1 0 01-1-1V3a1 1 0 011-1h2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+      <path d="M10 10.5L13 7.5l-3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+      <path d="M13 7.5H6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+    </svg>
+  )
+}
+
+// ── Hook: window width ─────────────────────────────────────
+function useWindowWidth() {
+  const [w, setW] = useState(typeof window !== 'undefined' ? window.innerWidth : 1280)
+  useEffect(() => {
+    const handler = () => setW(window.innerWidth)
+    window.addEventListener('resize', handler)
+    return () => window.removeEventListener('resize', handler)
+  }, [])
+  return w
+}
+
+// ── Searchable branch dropdown ─────────────────────────────
 function BranchSearchSelect({ branches, value, onChange }) {
   const [query, setQuery] = useState('')
   const [open,  setOpen]  = useState(false)
@@ -51,32 +86,25 @@ function BranchSearchSelect({ branches, value, onChange }) {
   function pick(b) { onChange(b ? b.id : ''); setQuery(''); setOpen(false) }
 
   return (
-    <div ref={ref} style={{ position:'relative', minWidth:220 }}>
+    <div ref={ref} className="branch-search-wrap">
       <div
+        className={`branch-search-trigger${open ? ' open' : ''}`}
         onClick={() => setOpen(o => !o)}
-        style={{
-          display:'flex', alignItems:'center', justifyContent:'space-between',
-          padding:'8px 12px', border:'2px solid #e0e0e0', borderRadius:8,
-          background:'#fff', cursor:'pointer', fontSize:'0.88rem', fontWeight:600,
-          transition:'border-color 0.2s', userSelect:'none',
-          ...(open ? { borderColor:'#d10c0c' } : {}),
-        }}
+        role="button"
+        tabIndex={0}
+        onKeyDown={e => e.key === 'Enter' && setOpen(o => !o)}
       >
-        <span style={{ color: selected ? '#333' : '#aaa', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+        <span className={selected ? 'bs-selected' : 'bs-placeholder'}>
           {selected ? (selected.name || selected.id) : 'Select Branch…'}
         </span>
-        <span style={{ marginLeft:8, color:'#888', fontSize:'0.7rem', flexShrink:0 }}>
-          {open ? '▲' : '▼'}
-        </span>
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className={`bs-chevron${open ? ' open' : ''}`}>
+          <path d="M2 4l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
       </div>
 
       {open && (
-        <div style={{
-          position:'absolute', top:'calc(100% + 4px)', left:0, right:0,
-          background:'#fff', border:'2px solid #d10c0c', borderRadius:8,
-          boxShadow:'0 8px 24px rgba(0,0,0,0.15)', zIndex:300, overflow:'hidden',
-        }}>
-          <div style={{ padding:'8px 10px', borderBottom:'1px solid #eee' }}>
+        <div className="branch-search-dropdown">
+          <div className="bs-search-wrap">
             <input
               autoFocus
               type="text"
@@ -84,32 +112,24 @@ function BranchSearchSelect({ branches, value, onChange }) {
               value={query}
               onChange={e => setQuery(e.target.value)}
               onClick={e => e.stopPropagation()}
-              style={{ width:'100%', padding:'6px 10px', border:'1px solid #e0e0e0', borderRadius:6, fontSize:'0.85rem', outline:'none' }}
+              className="bs-input"
             />
           </div>
-          <div style={{ maxHeight:200, overflowY:'auto' }}>
-            <div onClick={() => pick(null)}
-              style={{ padding:'9px 14px', cursor:'pointer', fontSize:'0.85rem', color:'#aaa', borderBottom:'1px solid #f5f5f5' }}
-              onMouseEnter={e => e.currentTarget.style.background='#f9f9f9'}
-              onMouseLeave={e => e.currentTarget.style.background='transparent'}>
+          <div className="bs-list">
+            <div className="bs-item bs-item-reset" onClick={() => pick(null)}>
               — Select Branch —
             </div>
             {filtered.length === 0 && (
-              <div style={{ padding:'10px 14px', color:'#bbb', fontSize:'0.83rem' }}>No branches found.</div>
+              <div className="bs-empty">No branches found.</div>
             )}
             {filtered.map(b => (
-              <div key={b.id} onClick={() => pick(b)}
-                style={{
-                  padding:'9px 14px', cursor:'pointer', fontSize:'0.85rem',
-                  fontWeight: b.id === value ? 700 : 400,
-                  background: b.id === value ? '#fff5f5' : 'transparent',
-                  color: b.id === value ? '#d10c0c' : '#333',
-                  borderBottom:'1px solid #f5f5f5',
-                }}
-                onMouseEnter={e => { if (b.id !== value) e.currentTarget.style.background='#f9f9f9' }}
-                onMouseLeave={e => { if (b.id !== value) e.currentTarget.style.background='transparent' }}>
-                {b.name || b.id}
-                <span style={{ color:'#ccc', fontSize:'0.72rem', marginLeft:6 }}>{b.id}</span>
+              <div
+                key={b.id}
+                className={`bs-item${b.id === value ? ' selected' : ''}`}
+                onClick={() => pick(b)}
+              >
+                <span className="bs-item-name">{b.name || b.id}</span>
+                <span className="bs-item-id">{b.id}</span>
               </div>
             ))}
           </div>
@@ -119,20 +139,45 @@ function BranchSearchSelect({ branches, value, onChange }) {
   )
 }
 
-// ── Main layout ───────────────────────────────────────────
+// ── Main layout ────────────────────────────────────────────
 export function AdminLayout() {
   const { currentUser, userProfile }                       = useAuth()
   const { allBranches, activeBranchId, setActiveBranchId } = useAdmin()
   const navigate   = useNavigate()
   const location   = useLocation()
+  const windowW    = useWindowWidth()
+  const isMobile   = windowW <= 768
+
+  useAutoBackup()
+
+  // On desktop: true = sidebar completely hidden, false = sidebar fully visible
+  const [sidebarHidden, setSidebarHidden] = useState(() =>
+    localStorage.getItem('admin_sidebar_hidden') === 'true'
+  )
+  const [mobileOpen, setMobileOpen] = useState(false)
+
   const isSuperAdmin = userProfile?.role === 'superadmin'
 
   const initials = (userProfile?.displayName || currentUser?.email || '?')
-    .split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)
+    .split(/[\s@]/).filter(Boolean).map(w => w[0]).join('').toUpperCase().slice(0, 2)
 
   const showBranchSel = ['/admin/rates', '/admin/holidays'].includes(location.pathname)
   const title         = PAGE_TITLES[location.pathname] || 'Admin'
   const navItems      = [...NAV_ITEMS, ...(isSuperAdmin ? SUPER_ITEMS : [])]
+
+  // Close mobile sidebar on route change
+  useEffect(() => { setMobileOpen(false) }, [location.pathname])
+
+  // Persist hidden state
+  useEffect(() => {
+    localStorage.setItem('admin_sidebar_hidden', sidebarHidden)
+  }, [sidebarHidden])
+
+  // Prevent body scroll when mobile sidebar is open
+  useEffect(() => {
+    document.body.style.overflow = mobileOpen ? 'hidden' : ''
+    return () => { document.body.style.overflow = '' }
+  }, [mobileOpen])
 
   function isActive(path) {
     return path === '/admin'
@@ -140,63 +185,120 @@ export function AdminLayout() {
       : location.pathname.startsWith(path)
   }
 
+  const handleToggle = useCallback(() => {
+    if (isMobile) {
+      setMobileOpen(o => !o)
+    } else {
+      // Desktop: fully show or fully hide
+      setSidebarHidden(h => !h)
+    }
+  }, [isMobile])
+
   async function handleSignOut() {
     await auth.signOut()
     navigate('/login')
   }
 
-  return (
-    <div style={{ display:'flex', height:'100vh', overflow:'hidden' }}>
+  // Desktop: sidebar-hidden = completely hide sidebar + expand main to full width
+  const layoutClass = [
+    'admin-layout',
+    !isMobile && sidebarHidden ? 'sidebar-hidden' : '',
+  ].filter(Boolean).join(' ')
 
-      {/* Sidebar */}
-      <aside className="sidebar">
+  return (
+    <div className={layoutClass}>
+
+      {/* Mobile overlay */}
+      {mobileOpen && (
+        <div
+          className="sidebar-overlay active"
+          onClick={() => setMobileOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* ── Sidebar ── */}
+      <aside className={`sidebar${mobileOpen ? ' mobile-open' : ''}`} aria-label="Sidebar navigation">
+
+        {/* Logo */}
         <div className="sidebar-logo">
-          <span className="logo-icon">🏨</span>
-          <span className="logo-text">KioskAdmin</span>
+          <div className="logo-icon-wrap">
+            <span role="img" aria-label="hotel" style={{ fontSize: '1.15rem', lineHeight: 1 }}>🏨</span>
+          </div>
+          <div className="logo-full">
+            <span className="logo-name">KioskAdmin</span>
+            <span className="logo-sub">Admin Console</span>
+          </div>
         </div>
 
-        <nav className="sidebar-nav">
+        {/* Nav */}
+        <nav className="sidebar-nav" aria-label="Main navigation">
           {navItems.map(item => (
-            <a key={item.path} href="#"
-              className={`nav-link ${isActive(item.path) ? 'active' : ''}`}
-              onClick={e => { e.preventDefault(); navigate(item.path) }}>
-              <span className="nav-icon">{item.icon}</span> {item.label}
+            <a
+              key={item.path}
+              href="#"
+              className={`nav-link${isActive(item.path) ? ' active' : ''}`}
+              data-label={item.label}
+              aria-current={isActive(item.path) ? 'page' : undefined}
+              onClick={e => { e.preventDefault(); navigate(item.path) }}
+            >
+              <span className="nav-icon" aria-hidden="true">{item.icon}</span>
+              <span className="nav-label">{item.label}</span>
             </a>
           ))}
 
-          {/* Divider before Settings */}
-          <div style={{ borderTop:'1px solid rgba(255,255,255,0.08)', margin:'8px 0' }} />
+          <div className="nav-divider" role="separator" />
 
           {BOTTOM_ITEMS.map(item => (
-            <a key={item.path} href="#"
-              className={`nav-link ${isActive(item.path) ? 'active' : ''}`}
-              onClick={e => { e.preventDefault(); navigate(item.path) }}>
-              <span className="nav-icon">{item.icon}</span> {item.label}
+            <a
+              key={item.path}
+              href="#"
+              className={`nav-link${isActive(item.path) ? ' active' : ''}`}
+              data-label={item.label}
+              aria-current={isActive(item.path) ? 'page' : undefined}
+              onClick={e => { e.preventDefault(); navigate(item.path) }}
+            >
+              <span className="nav-icon" aria-hidden="true">{item.icon}</span>
+              <span className="nav-label">{item.label}</span>
             </a>
           ))}
         </nav>
 
+        {/* Footer */}
         <div className="sidebar-footer">
           <div className="user-badge">
-            <div className="user-avatar">{initials}</div>
-            <div>
+            <div className="user-avatar" aria-hidden="true">{initials}</div>
+            <div className="user-info">
               <div className="user-name">{userProfile?.displayName || currentUser?.email}</div>
               <div className="user-role">{(userProfile?.role || 'user').toUpperCase()}</div>
             </div>
           </div>
-          <button className="btn-signout" onClick={handleSignOut}>Sign Out</button>
+          <button className="btn-signout" onClick={handleSignOut} aria-label="Sign out">
+            <IconSignOut />
+            <span className="nav-label">Sign Out</span>
+          </button>
         </div>
       </aside>
 
-      {/* Right side */}
-      <div style={{
-        marginLeft: 'var(--sidebar-w)', flex:1,
-        display:'flex', flexDirection:'column',
-        height:'100vh', overflow:'hidden', minWidth:0,
-      }}>
+      {/* ── Right side ── */}
+      <div className="main-content">
+
         {/* Topbar */}
-        <div className="topbar" style={{ flexShrink:0 }}>
-          <h1 className="page-title">{title}</h1>
+        <header className="topbar">
+          <div className="topbar-left">
+            <button
+              className="sidebar-toggle-btn"
+              onClick={handleToggle}
+              aria-label={isMobile
+                ? (mobileOpen ? 'Close menu' : 'Open menu')
+                : (sidebarHidden ? 'Show sidebar' : 'Hide sidebar')
+              }
+            >
+              <IconMenu />
+            </button>
+            <h1 className="page-title">{title}</h1>
+          </div>
+
           <div className="topbar-right">
             {showBranchSel && (
               <BranchSearchSelect
@@ -206,10 +308,10 @@ export function AdminLayout() {
               />
             )}
           </div>
-        </div>
+        </header>
 
-        {/* Scrollable content */}
-        <div style={{ flex:1, overflowY:'auto', overflowX:'hidden' }}>
+        {/* Page content — overflow-x:clip keeps position:fixed portals working */}
+        <div className="page-content">
           <Outlet />
         </div>
       </div>

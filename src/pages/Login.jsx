@@ -1,23 +1,32 @@
 // src/pages/Login.jsx
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { auth, db }    from '../firebase/config'
 import { useAuth }     from '../context/AuthContext'
+import { AdminLoader } from '../components/AdminLoader'
 import '../styles/login.css'
 
 export function Login() {
   const navigate    = useNavigate()
-  const { disabledError, clearDisabledError } = useAuth()
+  // ── Pull currentUser & loading from AuthContext ───────────
+  // AuthContext already has ONE onAuthStateChanged listener.
+  // We react to its state instead of adding a second listener here.
+  const { currentUser, loading, disabledError, clearDisabledError } = useAuth()
 
-  const [email,        setEmail]        = useState('')
-  const [password,     setPassword]     = useState('')
-  const [error,        setError]        = useState('')
-  const [loading,      setLoading]      = useState(false)
-  const [checkingAuth, setCheckingAuth] = useState(true)
-  const [showPw,       setShowPw]       = useState(false)
+  const [email,    setEmail]    = useState('')
+  const [password, setPassword] = useState('')
+  const [error,    setError]    = useState('')
+  const [signingIn, setSigningIn] = useState(false)
+  const [showPw,   setShowPw]   = useState(false)
 
-  // Guard: only ONE navigation ever fires — prevents the throttle loop
-  const hasNavigated = useRef(false)
+  // ── Redirect once AuthContext confirms a logged-in user ───
+  // This replaces the old onAuthStateChanged listener in Login.jsx
+  // and avoids the "throttling navigation" loop.
+  useEffect(() => {
+    if (!loading && currentUser) {
+      navigate('/admin', { replace: true })
+    }
+  }, [currentUser, loading, navigate])
 
   // Show disabled-account message from AuthContext
   useEffect(() => {
@@ -25,25 +34,7 @@ export function Login() {
       setError('⛔ Your account has been disabled. Please contact your administrator.')
       clearDisabledError()
     }
-  }, [disabledError])
-
-  // ── Single auth-state listener ────────────────────────────
-  // This is the ONLY place that calls navigate('/admin').
-  // The login handler just signs in — this listener does the redirect.
-  useEffect(() => {
-    const unsub = auth.onAuthStateChanged(user => {
-      if (user) {
-        if (!hasNavigated.current) {
-          hasNavigated.current = true
-          navigate('/admin', { replace: true })
-        }
-      } else {
-        setCheckingAuth(false)
-        setLoading(false)
-      }
-    })
-    return unsub
-  }, [navigate])
+  }, [disabledError, clearDisabledError])
 
   // ── Login handler ─────────────────────────────────────────
   async function handleLogin(e) {
@@ -52,7 +43,7 @@ export function Login() {
       setError('Please enter your email and password.')
       return
     }
-    setLoading(true)
+    setSigningIn(true)
     setError('')
 
     try {
@@ -78,26 +69,23 @@ export function Login() {
 
       if (!profile) {
         await auth.signOut()
-        hasNavigated.current = false
         setError('Account not found in the system. Contact your administrator.')
-        setLoading(false)
+        setSigningIn(false)
         return
       }
 
       if (profile.disabled === true) {
         await auth.signOut()
-        hasNavigated.current = false
         setError('⛔ Your account has been disabled. Contact your administrator.')
-        setLoading(false)
+        setSigningIn(false)
         return
       }
 
-      // Auth succeeded — onAuthStateChanged fires and navigates.
-      // Keep spinner showing until navigation happens.
+      // Auth succeeded — the useEffect above reacts to currentUser changing
+      // and calls navigate('/admin'). Keep spinner until then.
 
     } catch (err) {
-      hasNavigated.current = false
-      setLoading(false)
+      setSigningIn(false)
       const friendly = {
         'auth/user-not-found':         '❌ No account found with that email.',
         'auth/wrong-password':         '❌ Incorrect password. Please try again.',
@@ -112,32 +100,9 @@ export function Login() {
   }
 
   // ── Full-screen loading spinner ───────────────────────────
-  if (checkingAuth || loading) {
-    return (
-      <div style={{
-        position: 'fixed', inset: 0,
-        background: 'linear-gradient(135deg, #700909 0%, #d10c0c 100%)',
-        display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center',
-        gap: 20, zIndex: 9999,
-      }}>
-        <div style={{
-          width: 56, height: 56,
-          border: '5px solid rgba(243,243,42,0.25)',
-          borderTop: '5px solid #f3f32a',
-          borderRadius: '50%',
-          animation: 'spin 0.9s linear infinite',
-        }} />
-        <p style={{
-          color: '#f3f32a', fontWeight: 900,
-          fontSize: '0.95rem', letterSpacing: 3,
-          fontFamily: 'Arial, sans-serif',
-        }}>
-          {loading ? 'SIGNING IN…' : 'LOADING…'}
-        </p>
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-      </div>
-    )
+  // Show while Firebase resolves the initial session OR while signing in
+  if (loading || signingIn) {
+    return <AdminLoader status={loading ? 'Checking authentication...' : 'Signing in...'} />
   }
 
   // ── Login form ────────────────────────────────────────────
@@ -157,7 +122,7 @@ export function Login() {
               value={email}
               onChange={e => { setEmail(e.target.value); setError('') }}
               autoComplete="email"
-              disabled={loading}
+              disabled={signingIn}
             />
           </div>
 
@@ -170,7 +135,7 @@ export function Login() {
                 value={password}
                 onChange={e => { setPassword(e.target.value); setError('') }}
                 autoComplete="current-password"
-                disabled={loading}
+                disabled={signingIn}
                 style={{ paddingRight: 44 }}
               />
               <button
@@ -202,7 +167,7 @@ export function Login() {
             </div>
           )}
 
-          <button className="login-btn" type="submit" disabled={loading}>
+          <button className="login-btn" type="submit" disabled={signingIn}>
             SIGN IN
           </button>
         </form>

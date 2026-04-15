@@ -126,6 +126,16 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
   const [saving,       setSaving]       = useState(false)
   const [expandedAdj,  setExpandedAdj]  = useState(0)
 
+  // ── AI-scheduled entry view/edit ──────────────────────────
+  const [aiEditModal,  setAiEditModal]  = useState(false)
+  const [aiEditEntry,  setAiEditEntry]  = useState(null)
+  const [aiEditLabel,  setAiEditLabel]  = useState('')
+  const [aiEditDate,   setAiEditDate]   = useState('')
+  const [aiEditTime,   setAiEditTime]   = useState('06:00')
+  const [aiEditRates,  setAiEditRates]  = useState(null)
+  const [aiEditCat,    setAiEditCat]    = useState('weekday')
+  const [savingAiEdit, setSavingAiEdit] = useState(false)
+
   // ── Realtime listener + precise per-entry timers ───────────
   useEffect(() => {
     if (!branchId) { setScheduled([]); return }
@@ -326,6 +336,49 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
     setPreviewRates(null); setModal(true)
   }
 
+  function openAiEdit(entry) {
+    setAiEditEntry(entry)
+    setAiEditLabel(entry.label || '')
+    setAiEditDate(entry.applyAt ? entry.applyAt.slice(0,10) : '')
+    setAiEditTime(entry.applyAt ? entry.applyAt.slice(11,16) : '06:00')
+    setAiEditRates(JSON.parse(JSON.stringify(entry.newRates || {})))
+    // Default to first category that has data
+    const firstCat = CATEGORIES.find(c => Object.keys(entry.newRates?.[c] || {}).length > 0) || 'weekday'
+    setAiEditCat(firstCat)
+    setAiEditModal(true)
+  }
+
+  function updateAiEditRate(cat, slot, idx, val) {
+    setAiEditRates(prev => {
+      const next = { ...prev, [cat]: { ...(prev[cat] || {}) } }
+      next[cat][slot] = [...(next[cat][slot] || [])]
+      next[cat][slot][idx] = Number(val) || 0
+      return next
+    })
+  }
+
+  async function saveAiEdit() {
+    if (!aiEditLabel.trim()) { showToast('Add a label.', 'warn'); return }
+    if (!aiEditDate)          { showToast('Set an apply date.', 'warn'); return }
+    setSavingAiEdit(true)
+    try {
+      const applyAt = new Date(aiEditDate + 'T' + aiEditTime).toISOString()
+      await db.collection('branches').doc(branchId)
+        .collection('scheduledRates').doc(aiEditEntry.id)
+        .update({
+          label:     aiEditLabel,
+          applyAt,
+          newRates:  aiEditRates,
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+          updatedBy: currentUser.email,
+        })
+      await logAction('UPDATE_SCHEDULED_RATES', `Edited AI-scheduled rates "${aiEditLabel}"`, branchId, branchName)
+      showToast('✅ Schedule updated!')
+      setAiEditModal(false)
+    } catch (err) { showToast('Error: ' + err.message, 'error') }
+    finally { setSavingAiEdit(false) }
+  }
+
   async function saveScheduled() {
     if (!label.trim()) { showToast('Add a label.', 'warn'); return }
     if (!applyDate)    { showToast('Set an apply date.', 'warn'); return }
@@ -432,10 +485,10 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
                                 {applying===entry.id ? '⏳…' : '▶ Apply Now'}
                               </button>
                             )}
-                            {!isAI && (
-                              <button className="btn btn-outline" style={{ fontSize:'0.75rem', padding:'4px 9px' }}
-                                onClick={() => openEdit(entry)}>✏️ Edit</button>
-                            )}
+                            <button className="btn btn-outline" style={{ fontSize:'0.75rem', padding:'4px 9px' }}
+                              onClick={() => isAI ? openAiEdit(entry) : openEdit(entry)}>
+                              {isAI ? '👁 View / Edit' : '✏️ Edit'}
+                            </button>
                             <button className="btn btn-danger" style={{ fontSize:'0.75rem', padding:'4px 9px' }}
                               disabled={cancelling===entry.id} onClick={() => cancelEntry(entry)}>
                               {cancelling===entry.id ? '…' : '🗑 Remove'}
@@ -594,6 +647,92 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
           </div>
         )}
       </Modal>
+
+      {/* AI Scheduled Rates — View / Edit Modal */}
+      <Modal show={aiEditModal} onClose={() => setAiEditModal(false)}
+        title={`🤖 AI Scheduled Rates — ${aiEditEntry?.label || ''}`} wide
+        actions={
+          <>
+            <button className="btn btn-ghost" onClick={() => setAiEditModal(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={saveAiEdit} disabled={savingAiEdit}>
+              {savingAiEdit ? 'Saving…' : '✅ Save Changes'}
+            </button>
+          </>
+        }
+      >
+        <div className="form-group">
+          <label>Label / Description</label>
+          <input type="text" value={aiEditLabel} onChange={e => setAiEditLabel(e.target.value)} placeholder="e.g. Proposed May Weekday Rates" />
+        </div>
+        <div className="form-row">
+          <div className="form-group"><label>Apply Date</label><input type="date" value={aiEditDate} onChange={e => setAiEditDate(e.target.value)} /></div>
+          <div className="form-group"><label>Apply Time</label><input type="time" value={aiEditTime} onChange={e => setAiEditTime(e.target.value)} /></div>
+        </div>
+
+        {/* Category tabs */}
+        <div style={{ display:'flex', gap:4, marginBottom:10, marginTop:4 }}>
+          {CATEGORIES.map(cat => {
+            const hasData = Object.keys(aiEditRates?.[cat] || {}).length > 0
+            return (
+              <button key={cat}
+                className={`btn ${aiEditCat === cat ? 'btn-primary' : 'btn-outline'}`}
+                style={{ fontSize:'0.78rem', padding:'4px 12px', opacity: hasData ? 1 : 0.5 }}
+                onClick={() => setAiEditCat(cat)}>
+                {cat.charAt(0).toUpperCase() + cat.slice(1)}
+              </button>
+            )
+          })}
+        </div>
+
+        {/* Editable rate table */}
+        {aiEditRates && (() => {
+          const slots    = activeTSlots[aiEditCat] || []
+          const catRates = aiEditRates[aiEditCat]  || {}
+          if (!slots.length) return <p className="hint">No slots configured for {aiEditCat}.</p>
+          return (
+            <div style={{ overflowX:'auto', maxHeight:380, overflowY:'auto' }}>
+              <table style={{ borderCollapse:'collapse', fontSize:'0.78rem', width:'100%' }}>
+                <thead>
+                  <tr>
+                    <th style={{ padding:'6px 10px', background: CAT_COLOR[aiEditCat], color:'#fff', border:'1px solid #ddd', textAlign:'left', position:'sticky', top:0, whiteSpace:'nowrap', minWidth:90 }}>Slot</th>
+                    {activeRTypes.map(rt => (
+                      <th key={rt} style={{ padding:'6px 8px', background: CAT_COLOR[aiEditCat], color:'#fff', border:'1px solid #ddd', textAlign:'center', position:'sticky', top:0, whiteSpace:'nowrap', minWidth:90 }}>{rt}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {slots.map(slot => (
+                    <tr key={slot}>
+                      <td style={{ padding:'4px 10px', border:'1px solid #ddd', fontWeight:700, whiteSpace:'nowrap', background:'#f9f9f9' }}>
+                        {slot.replace(/_\d+$/, '')}
+                      </td>
+                      {activeRTypes.map((_, idx) => {
+                        const val     = catRates[slot]?.[idx] ?? 0
+                        const origVal = aiEditEntry?.newRates?.[aiEditCat]?.[slot]?.[idx] ?? 0
+                        const changed = val !== origVal
+                        return (
+                          <td key={idx} style={{ padding:'2px 4px', border:'1px solid #ddd', textAlign:'center', background: changed ? '#fffde7' : undefined }}>
+                            <input
+                              type="number" min="0"
+                              value={val}
+                              onChange={e => updateAiEditRate(aiEditCat, slot, idx, e.target.value)}
+                              style={{ width:'100%', minWidth:72, border: changed ? '1px solid #f0ad4e' : '1px solid #e0e0e0', borderRadius:4, padding:'3px 5px', textAlign:'center', background: changed ? '#fffde7' : '#fff', fontWeight: changed ? 700 : 400 }}
+                            />
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        })()}
+        <p style={{ color:'#888', fontSize:'0.74rem', marginTop:8 }}>
+          Yellow highlight = manually edited from the original AI-extracted value.
+        </p>
+      </Modal>
+
     </div>
   )
 }
