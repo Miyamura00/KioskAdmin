@@ -160,7 +160,12 @@ export function RateHistory({ branchId, branchName, mode, activeRTypes, activeTS
                     </td>
                     <td style={{ fontSize:'0.82rem', fontWeight:700 }}>{entry.savedByName||entry.savedBy}</td>
                     <td style={{ fontSize:'0.8rem', color:'#888', fontStyle:'italic' }}>
-                      {entry.note||(entry.scheduledLabel?`Scheduled: ${entry.scheduledLabel}`:'—')}
+                      {entry.scheduledLabel
+                        ? <span>
+                            <span style={{ background:'#e8f5e9', color:'#2e7d32', borderRadius:6, padding:'1px 7px', fontSize:'0.69rem', fontWeight:800, marginRight:6, fontStyle:'normal' }}>⏰ Scheduled</span>
+                            {entry.scheduledLabel}
+                          </span>
+                        : entry.note || '—'}
                     </td>
                     <td style={{ textAlign:'center' }}>
                       {diff === 0
