@@ -25,6 +25,16 @@ function formatDt(dt) {
 function isPast(dt) { return dt && new Date(dt) <= new Date() }
 function newAdj()   { return { id: Date.now(), type:'increase', amount:'', slots:[], rooms:[] } }
 
+// Parse a UTC ISO string into local date ("YYYY-MM-DD") and time ("HH:MM")
+// so the UI always shows the time the user originally set, not the UTC offset.
+function isoToLocal(isoStr) {
+  if (!isoStr) return { date: '', time: '06:00' }
+  const d = new Date(isoStr)
+  const date = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+  const time = `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`
+  return { date, time }
+}
+
 function applyAdjustments(baseRates, adjustments, activeTSlots, activeRTypes) {
   const result = {}
   CATEGORIES.forEach(cat => {
@@ -126,7 +136,7 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
   const [saving,       setSaving]       = useState(false)
   const [expandedAdj,  setExpandedAdj]  = useState(0)
 
-  // ── AI-scheduled entry view/edit ──────────────────────────
+  // ── AI / Excel scheduled entry view/edit ──────────────────────────
   const [aiEditModal,  setAiEditModal]  = useState(false)
   const [aiEditEntry,  setAiEditEntry]  = useState(null)
   const [aiEditLabel,  setAiEditLabel]  = useState('')
@@ -140,18 +150,15 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
   useEffect(() => {
     if (!branchId) { setScheduled([]); return }
 
-    // Track per-entry timers so we can clear them on unmount / re-render
     const timers = new Map()
 
     function scheduleTimer(entry) {
-      if (timers.has(entry.id)) return   // already scheduled
+      if (timers.has(entry.id)) return
       const msUntil = new Date(entry.applyAt) - Date.now()
       if (msUntil <= 0) {
-        // Already overdue — apply immediately
         applyEntry(entry, true)
         return
       }
-      // Fire at the exact moment it's due (+ 500 ms buffer for clock drift)
       const t = setTimeout(() => {
         applyEntry(entry, true)
         timers.delete(entry.id)
@@ -170,13 +177,11 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
 
         setScheduled(entries)
 
-        // Cancel timers for entries that no longer exist (cancelled/deleted)
         const liveIds = new Set(entries.map(e => e.id))
         timers.forEach((t, id) => {
           if (!liveIds.has(id)) { clearTimeout(t); timers.delete(id) }
         })
 
-        // Set a precise timer for each pending entry
         entries.forEach(scheduleTimer)
 
       }, err => console.error('scheduledRates snapshot:', err))
@@ -200,11 +205,10 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
     } catch (err) { console.error(err) }
   }
 
-  // Guard against applying the same entry twice concurrently
   const applyingSet = new Set()
 
   async function applyEntry(entry, silent = false) {
-    if (applyingSet.has(entry.id)) return   // already in progress
+    if (applyingSet.has(entry.id)) return
     if (!silent && !confirm(`Apply "${entry.label}" now?\nThis updates live rates immediately.`)) return
     applyingSet.add(entry.id)
     setApplying(entry.id)
@@ -214,11 +218,13 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
       const currData = curr.data() || {}
       const currRates = mode === 'walkin' ? currData.rates : currData.driveInRates
 
-      // Safety: skip if already applied (another tab may have done it)
       const entrySnap = await ref.collection('scheduledRates').doc(entry.id).get()
       if (!entrySnap.exists || entrySnap.data()?.status !== 'pending') return
 
-      // Archive current rates to history before overwriting
+      // Always use fresh data from Firestore so any edits saved after
+      // the timer was set (or after the entry was loaded) are respected.
+      const freshData = entrySnap.data()
+
       if (currRates) {
         await ref.collection('rateHistory').add({
           savedAt:       firebase.firestore.FieldValue.serverTimestamp(),
@@ -226,37 +232,31 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
           savedByName:   userProfile?.displayName || currentUser?.email || 'Auto',
           mode,
           rates:         currRates,
-          note:          `Auto-applied scheduled: "${entry.label}"`,
-          scheduledLabel: entry.label,
+          note:          `Auto-applied scheduled: "${freshData.label || entry.label}"`,
+          scheduledLabel: freshData.label || entry.label,
         })
       }
 
-      // Determine final rates — validate they have real values (not all zeros)
-      let finalRates = entry.newRates
+      let finalRates = freshData.newRates
       const hasRealValues = finalRates && Object.values(finalRates).some(cat =>
         Object.values(cat || {}).some(arr =>
           Array.isArray(arr) && arr.some(v => Number(v) > 0)
         )
       )
-      if (!hasRealValues && entry.adjustments?.length) {
-        // Fallback: recompute from adjustments on top of current rates
-        finalRates = applyAdjustments(currRates || {}, entry.adjustments, activeTSlots, activeRTypes)
+      if (!hasRealValues && freshData.adjustments?.length) {
+        finalRates = applyAdjustments(currRates || {}, freshData.adjustments, activeTSlots, activeRTypes)
       }
 
-      // Apply to main branch rates
       const update = mode === 'walkin' ? { rates: finalRates } : { driveInRates: finalRates }
       await ref.update(update)
 
-      // ── Delete the scheduled entry from Firestore (not just mark applied) ──
-      // The rate history entry above is the audit trail.
       await ref.collection('scheduledRates').doc(entry.id).delete()
 
-      // Schedule rollback if configured
-      if (entry.rollbackAt && entry.rollbackRates) {
+      if (freshData.rollbackAt && freshData.rollbackRates) {
         await ref.collection('scheduledRates').add({
-          label:         `↩ Auto-Rollback: ${entry.label}`,
-          applyAt:       entry.rollbackAt,
-          newRates:      entry.rollbackRates,
+          label:         `↩ Auto-Rollback: ${freshData.label || entry.label}`,
+          applyAt:       freshData.rollbackAt,
+          newRates:      freshData.rollbackRates,
           adjustments:   [],
           mode,
           status:        'pending',
@@ -268,10 +268,9 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
         })
       }
 
-      await logAction('APPLY_SCHEDULED_RATES', `Auto-applied "${entry.label}" for ${branchName}`, branchId, branchName)
-      if (!silent) showToast(`✅ "${entry.label}" applied!`)
+      await logAction('APPLY_SCHEDULED_RATES', `Auto-applied "${freshData.label || entry.label}" for ${branchName}`, branchId, branchName)
+      if (!silent) showToast(`✅ "${freshData.label || entry.label}" applied!`)
       if (onScheduledApplied) onScheduledApplied(finalRates)
-      // onSnapshot will auto-refresh the list — no need to call fetchScheduled()
     } catch (err) {
       console.error('applyEntry error:', err)
       if (!silent) showToast('Error: ' + err.message, 'error')
@@ -285,11 +284,9 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
     if (!confirm(`Cancel and remove "${entry.label}"?`)) return
     setCancelling(entry.id)
     try {
-      // Delete the doc — cancelled schedules don't need to remain
       await db.collection('branches').doc(branchId).collection('scheduledRates').doc(entry.id).delete()
       await logAction('CANCEL_SCHEDULED_RATES', `Cancelled "${entry.label}"`, branchId, branchName)
       showToast('Cancelled and removed.', 'warn')
-      // onSnapshot will auto-refresh
     } catch (err) { showToast('Error: ' + err.message, 'error') }
     finally { setCancelling(null) }
   }
@@ -325,8 +322,9 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
 
   function openEdit(entry) {
     setEditEntry(entry); setLabel(entry.label || '')
-    setApplyDate(entry.applyAt ? entry.applyAt.slice(0,10) : '')
-    setApplyTime(entry.applyAt ? entry.applyAt.slice(11,16) : '06:00')
+    const { date: ed, time: et } = isoToLocal(entry.applyAt)
+    setApplyDate(ed)
+    setApplyTime(et)
     const adjs = (entry.adjustments || []).map((a, i) => ({ id: Date.now()+i, type: a.type, amount: String(a.amount), slots: a.slots||[], rooms: a.rooms||[] }))
     setAdjustments(adjs.length ? adjs : [newAdj()])
     setExpandedAdj(adjs[0]?.id ?? 0)
@@ -336,13 +334,14 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
     setPreviewRates(null); setModal(true)
   }
 
+  // ── Shared view/edit modal for AI and Excel scheduled entries ──
   function openAiEdit(entry) {
     setAiEditEntry(entry)
     setAiEditLabel(entry.label || '')
-    setAiEditDate(entry.applyAt ? entry.applyAt.slice(0,10) : '')
-    setAiEditTime(entry.applyAt ? entry.applyAt.slice(11,16) : '06:00')
+    const { date: ad, time: at } = isoToLocal(entry.applyAt)
+    setAiEditDate(ad)
+    setAiEditTime(at)
     setAiEditRates(JSON.parse(JSON.stringify(entry.newRates || {})))
-    // Default to first category that has data
     const firstCat = CATEGORIES.find(c => Object.keys(entry.newRates?.[c] || {}).length > 0) || 'weekday'
     setAiEditCat(firstCat)
     setAiEditModal(true)
@@ -372,7 +371,8 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
           updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
           updatedBy: currentUser.email,
         })
-      await logAction('UPDATE_SCHEDULED_RATES', `Edited AI-scheduled rates "${aiEditLabel}"`, branchId, branchName)
+      const sourceLabel = aiEditEntry.source === 'excel-import' ? 'Excel-scheduled' : 'AI-scheduled'
+      await logAction('UPDATE_SCHEDULED_RATES', `Edited ${sourceLabel} rates "${aiEditLabel}"`, branchId, branchName)
       showToast('✅ Schedule updated!')
       setAiEditModal(false)
     } catch (err) { showToast('Error: ' + err.message, 'error') }
@@ -416,8 +416,7 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
     finally { setSaving(false) }
   }
 
-  const pending = scheduled  // all entries in state are pending (applied ones are deleted from Firestore)
-  const past    = []         // applied entries are deleted; audit trail is in rateHistory collection
+  const pending = scheduled
 
   return (
     <div className="card mt20">
@@ -438,22 +437,32 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
       {loading ? <p className="hint">Loading…</p> : (
         <>
           {pending.length === 0 ? (
-            <p className="hint">No pending scheduled changes. Click <strong>+ Schedule Change</strong> or use <strong>🤖 AI Import</strong>.</p>
+            <p className="hint">No pending scheduled changes. Click <strong>+ Schedule Change</strong> or use <strong>🤖 AI Import</strong> or <strong>📥 Import Excel</strong>.</p>
           ) : (
             <div style={{ overflowX:'auto', marginBottom:16 }}>
               <table className="holiday-table">
                 <thead><tr><th>Label</th><th>Apply At</th><th>Adjustments</th><th>Rollback</th><th>Actions</th></tr></thead>
                 <tbody>
                   {pending.map(entry => {
-                    const due  = isPast(entry.applyAt)
-                    const adjs = entry.adjustments || []
-                    const isAI = entry.source === 'ai-image-upload'
+                    const due           = isPast(entry.applyAt)
+                    const adjs          = entry.adjustments || []
+                    const isAI          = entry.source === 'ai-image-upload'
+                    const isExcelImport = entry.source === 'excel-import' || (entry.isAbsoluteImport && !isAI)
+                    // Both AI and Excel imported entries use the view/edit table modal
+                    const useTableEdit  = isAI || isExcelImport
                     return (
                       <tr key={entry.id} style={entry.isRollback ? { background:'#fffbe6' } : due ? { background:'#fff8e1' } : {}}>
                         <td>
                           <strong>{entry.label}</strong>
-                          {entry.isRollback && <span style={{ marginLeft:6, color:'#e67e22', fontSize:'0.72rem' }}>↩ Auto-Rollback</span>}
-                          {isAI && <span style={{ marginLeft:6, background:'#e8f5e9', color:'#2e7d32', borderRadius:8, padding:'1px 6px', fontSize:'0.68rem', fontWeight:800 }}>🤖 AI</span>}
+                          {entry.isRollback && (
+                            <span style={{ marginLeft:6, color:'#e67e22', fontSize:'0.72rem' }}>↩ Auto-Rollback</span>
+                          )}
+                          {isAI && (
+                            <span style={{ marginLeft:6, background:'#e8f5e9', color:'#2e7d32', borderRadius:8, padding:'1px 6px', fontSize:'0.68rem', fontWeight:800 }}>🤖 AI</span>
+                          )}
+                          {isExcelImport && (
+                            <span style={{ marginLeft:6, background:'#e0f2fe', color:'#0369a1', borderRadius:8, padding:'1px 6px', fontSize:'0.68rem', fontWeight:800 }}>📥 Excel</span>
+                          )}
                         </td>
                         <td style={{ fontSize:'0.82rem', whiteSpace:'nowrap' }}>
                           {formatDt(entry.applyAt)}
@@ -464,7 +473,9 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
                         </td>
                         <td style={{ fontSize:'0.79rem' }}>
                           {adjs.length === 0
-                            ? <span style={{ color:'#888', fontStyle:'italic' }}>Full rate set (AI import)</span>
+                            ? <span style={{ color:'#888', fontStyle:'italic' }}>
+                                {isAI ? 'Full rate set (AI import)' : isExcelImport ? 'Full rate set (Excel import)' : 'No adjustments'}
+                              </span>
                             : adjs.map((a,i) => (
                               <div key={i}>
                                 {a.type==='increase'?'➕':a.type==='decrease'?'➖':'🟰'} ₱{Number(a.amount).toLocaleString()}
@@ -486,8 +497,8 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
                               </button>
                             )}
                             <button className="btn btn-outline" style={{ fontSize:'0.75rem', padding:'4px 9px' }}
-                              onClick={() => isAI ? openAiEdit(entry) : openEdit(entry)}>
-                              {isAI ? '👁 View / Edit' : '✏️ Edit'}
+                              onClick={() => useTableEdit ? openAiEdit(entry) : openEdit(entry)}>
+                              {useTableEdit ? '👁 View / Edit' : '✏️ Edit'}
                             </button>
                             <button className="btn btn-danger" style={{ fontSize:'0.75rem', padding:'4px 9px' }}
                               disabled={cancelling===entry.id} onClick={() => cancelEntry(entry)}>
@@ -648,9 +659,14 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
         )}
       </Modal>
 
-      {/* AI Scheduled Rates — View / Edit Modal */}
+      {/* ── AI / Excel Scheduled Rates — View / Edit Modal ── */}
       <Modal show={aiEditModal} onClose={() => setAiEditModal(false)}
-        title={`🤖 AI Scheduled Rates — ${aiEditEntry?.label || ''}`} wide
+        title={
+          aiEditEntry?.source === 'excel-import'
+            ? `📥 Excel Scheduled Rates — ${aiEditEntry?.label || ''}`
+            : `🤖 AI Scheduled Rates — ${aiEditEntry?.label || ''}`
+        }
+        wide
         actions={
           <>
             <button className="btn btn-ghost" onClick={() => setAiEditModal(false)}>Cancel</button>
@@ -660,6 +676,14 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
           </>
         }
       >
+        {/* Source badge */}
+        <div style={{ marginBottom:12 }}>
+          {aiEditEntry?.source === 'excel-import'
+            ? <span style={{ background:'#e0f2fe', color:'#0369a1', borderRadius:8, padding:'3px 10px', fontSize:'0.75rem', fontWeight:800 }}>📥 Imported from Excel</span>
+            : <span style={{ background:'#e8f5e9', color:'#2e7d32', borderRadius:8, padding:'3px 10px', fontSize:'0.75rem', fontWeight:800 }}>🤖 Created by AI Import</span>
+          }
+        </div>
+
         <div className="form-group">
           <label>Label / Description</label>
           <input type="text" value={aiEditLabel} onChange={e => setAiEditLabel(e.target.value)} placeholder="e.g. Proposed May Weekday Rates" />
@@ -676,9 +700,15 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
             return (
               <button key={cat}
                 className={`btn ${aiEditCat === cat ? 'btn-primary' : 'btn-outline'}`}
-                style={{ fontSize:'0.78rem', padding:'4px 12px', opacity: hasData ? 1 : 0.5 }}
+                style={{
+                  fontSize:'0.78rem', padding:'4px 12px', opacity: hasData ? 1 : 0.5,
+                  ...(aiEditCat === cat ? { background: CAT_COLOR[cat], borderColor: CAT_COLOR[cat] } : {})
+                }}
                 onClick={() => setAiEditCat(cat)}>
                 {cat.charAt(0).toUpperCase() + cat.slice(1)}
+                {hasData && <span style={{ marginLeft:5, fontSize:'0.68rem', opacity:0.8 }}>
+                  ({Object.keys(aiEditRates[cat]).length} slots)
+                </span>}
               </button>
             )
           })}
@@ -729,7 +759,7 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
           )
         })()}
         <p style={{ color:'#888', fontSize:'0.74rem', marginTop:8 }}>
-          Yellow highlight = manually edited from the original AI-extracted value.
+          Yellow highlight = manually edited from the original imported value. Click <strong>Save Changes</strong> to persist.
         </p>
       </Modal>
 
