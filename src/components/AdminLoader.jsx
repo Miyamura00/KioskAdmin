@@ -1,9 +1,3 @@
-// src/components/AdminLoader.jsx
-// Admin Console page loader — completely separate from the kiosk loader.
-// Usage:
-//   import { AdminLoader } from '../components/AdminLoader'
-//   if (authLoading) return <AdminLoader />
-
 export function AdminLoader({ status = 'Initializing Admin Console' }) {
   return (
     <div className="admin-auth-loader" role="status" aria-label="Loading admin console">
