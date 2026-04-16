@@ -29,7 +29,7 @@ const PAGE_TITLES = {
   '/admin/users':    'User Management',
   '/admin/audit':    'Audit Trail',
   '/admin/settings': 'My Settings',
-  '/admin/backup':   'Data Backup',
+  '/admin/backup': 'Data Backup',
 }
 
 // ── SVG Icons ──────────────────────────────────────────────
@@ -148,11 +148,9 @@ export function AdminLayout() {
   const windowW    = useWindowWidth()
   const isMobile   = windowW <= 768
 
-  useAutoBackup()
-
-  // On desktop: true = sidebar completely hidden, false = sidebar fully visible
-  const [sidebarHidden, setSidebarHidden] = useState(() =>
-    localStorage.getItem('admin_sidebar_hidden') === 'true'
+  // Persist sidebar collapsed state
+  const [collapsed, setCollapsed] = useState(() =>
+    localStorage.getItem('admin_sidebar_collapsed') === 'true'
   )
   const [mobileOpen, setMobileOpen] = useState(false)
 
@@ -161,17 +159,17 @@ export function AdminLayout() {
   const initials = (userProfile?.displayName || currentUser?.email || '?')
     .split(/[\s@]/).filter(Boolean).map(w => w[0]).join('').toUpperCase().slice(0, 2)
 
-  const showBranchSel = ['/admin/rates', '/admin/holidays'].includes(location.pathname)
+  const showBranchSel = ['/admin/rates'].includes(location.pathname)
   const title         = PAGE_TITLES[location.pathname] || 'Admin'
   const navItems      = [...NAV_ITEMS, ...(isSuperAdmin ? SUPER_ITEMS : [])]
 
   // Close mobile sidebar on route change
   useEffect(() => { setMobileOpen(false) }, [location.pathname])
 
-  // Persist hidden state
+  // Persist collapse state
   useEffect(() => {
-    localStorage.setItem('admin_sidebar_hidden', sidebarHidden)
-  }, [sidebarHidden])
+    localStorage.setItem('admin_sidebar_collapsed', collapsed)
+  }, [collapsed])
 
   // Prevent body scroll when mobile sidebar is open
   useEffect(() => {
@@ -189,8 +187,7 @@ export function AdminLayout() {
     if (isMobile) {
       setMobileOpen(o => !o)
     } else {
-      // Desktop: fully show or fully hide
-      setSidebarHidden(h => !h)
+      setCollapsed(c => !c)
     }
   }, [isMobile])
 
@@ -199,10 +196,9 @@ export function AdminLayout() {
     navigate('/login')
   }
 
-  // Desktop: sidebar-hidden = completely hide sidebar + expand main to full width
   const layoutClass = [
     'admin-layout',
-    !isMobile && sidebarHidden ? 'sidebar-hidden' : '',
+    !isMobile && collapsed ? 'sidebar-collapsed' : '',
   ].filter(Boolean).join(' ')
 
   return (
@@ -291,7 +287,7 @@ export function AdminLayout() {
               onClick={handleToggle}
               aria-label={isMobile
                 ? (mobileOpen ? 'Close menu' : 'Open menu')
-                : (sidebarHidden ? 'Show sidebar' : 'Hide sidebar')
+                : (collapsed ? 'Expand sidebar' : 'Collapse sidebar')
               }
             >
               <IconMenu />
@@ -310,7 +306,9 @@ export function AdminLayout() {
           </div>
         </header>
 
-        {/* Page content — overflow-x:clip keeps position:fixed portals working */}
+        {/* Scrollable page content
+            NOTE: overflow-x:clip (not hidden) is intentional — it clips overflow
+            without creating a containing block, so position:fixed modals work correctly */}
         <div className="page-content">
           <Outlet />
         </div>

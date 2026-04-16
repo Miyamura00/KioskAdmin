@@ -9,8 +9,6 @@ import { Toast }     from '../../components/Toast'
 import { useToast }  from '../../hooks/useToast'
 import { useAudit }  from '../../hooks/useAudit'
 
-const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
-
 function formatDateTime(date, time) {
   if (!date) return '—'
   const d  = new Date(date + 'T00:00:00')
@@ -19,7 +17,7 @@ function formatDateTime(date, time) {
 }
 
 export function Holidays() {
-  const { activeBranchId, allBranches } = useAdmin()
+  const { activeBranchId } = useAdmin()
   const { currentUser, userProfile }    = useAuth()
   const { toast, showToast }            = useToast()
   const { logAction }                   = useAudit(currentUser, userProfile)
@@ -31,8 +29,7 @@ export function Holidays() {
   const [systemBranches, setSystemBranches] = useState([])
   const [globalHolidays, setGlobalHolidays] = useState([])
   const [loading,        setLoading]        = useState(true)
-  const [branchSettings, setBranchSettings] = useState({})
-  const [savingSchedule, setSavingSchedule] = useState(false)
+  const [savingHol,      setSavingHol]      = useState(false)
 
   // Modal state
   const [holModal,        setHolModal]        = useState(false)
@@ -44,12 +41,8 @@ export function Holidays() {
   const [holEndTime,      setHolEndTime]      = useState('23:59')
   const [holBranches,     setHolBranches]     = useState([])
   const [allBranchToggle, setAllBranchToggle] = useState(true)
-  const [savingHol,       setSavingHol]       = useState(false)
-
-  const branchName = allBranches.find(b => b.id === activeBranchId)?.name || activeBranchId
 
   useEffect(() => { loadAll() }, [])
-  useEffect(() => { if (activeBranchId) loadBranchSettings() }, [activeBranchId])
 
   async function loadAll() {
     setLoading(true)
@@ -64,34 +57,6 @@ export function Holidays() {
   async function loadGlobalHolidays() {
     const snap = await db.collection('holidays').orderBy('start').get()
     setGlobalHolidays(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-  }
-
-  async function loadBranchSettings() {
-    try {
-      const snap = await db.collection('branches').doc(activeBranchId).get()
-      setBranchSettings(snap.data()?.settings || {})
-    } catch (err) { console.error(err) }
-  }
-
-  async function saveSchedule(e) {
-    e.preventDefault()
-    if (!activeBranchId) return
-    setSavingSchedule(true)
-    const form = e.target
-    const ns = {
-      ...branchSettings,
-      weekendStartDay:  parseInt(form.wsd.value),
-      weekendStartHour: parseInt(form.wsh.value),
-      weekendEndDay:    parseInt(form.wed.value),
-      weekendEndHour:   parseInt(form.weh.value),
-    }
-    try {
-      await db.collection('branches').doc(activeBranchId).update({ settings: ns })
-      setBranchSettings(ns)
-      await logAction('UPDATE_SCHEDULE', `Updated weekend schedule for ${branchName}`, activeBranchId, branchName)
-      showToast('Weekend schedule saved!')
-    } catch (err) { showToast('Error: ' + err.message, 'error') }
-    finally { setSavingSchedule(false) }
   }
 
   function openAdd() {
@@ -169,51 +134,6 @@ export function Holidays() {
   return (
     <div className="page">
       <Toast toast={toast} />
-
-      {/* Weekend Schedule (per branch) */}
-      {activeBranchId ? (
-        <div className="card">
-          <h2 className="card-title" style={{ marginBottom:6 }}>Weekend Rate Schedule</h2>
-          <p style={{ color:'#666', fontSize:'0.83rem', marginBottom:14 }}>
-            Branch: <strong>{branchName}</strong>
-          </p>
-          <form onSubmit={saveSchedule}>
-            <div className="settings-row">
-              <div className="form-group">
-                <label>Weekend Starts (Day)</label>
-                <select name="wsd" defaultValue={branchSettings.weekendStartDay ?? 5}>
-                  {DAYS.map((d,i) => <option key={i} value={i}>{d}</option>)}
-                </select>
-              </div>
-              <div className="form-group">
-                <label>At Hour (0–23)</label>
-                <input name="wsh" type="number" min="0" max="23" defaultValue={branchSettings.weekendStartHour ?? 6} />
-              </div>
-              <div className="form-group">
-                <label>Weekend Ends (Day)</label>
-                <select name="wed" defaultValue={branchSettings.weekendEndDay ?? 0}>
-                  {DAYS.map((d,i) => <option key={i} value={i}>{d}</option>)}
-                </select>
-              </div>
-              <div className="form-group">
-                <label>At Hour (0–23)</label>
-                <input name="weh" type="number" min="0" max="23" defaultValue={branchSettings.weekendEndHour ?? 18} />
-              </div>
-              <div className="form-group" style={{ alignSelf:'flex-end' }}>
-                <button type="submit" className="btn btn-green" disabled={savingSchedule}>
-                  {savingSchedule ? 'Saving…' : '✔ Save Schedule'}
-                </button>
-              </div>
-            </div>
-          </form>
-        </div>
-      ) : (
-        <div className="card" style={{ background:'#fffbe6', border:'1px solid #ffe082' }}>
-          <p style={{ color:'#856404', fontSize:'0.85rem' }}>
-            💡 Select a branch from the top bar to manage its weekend schedule.
-          </p>
-        </div>
-      )}
 
       {/* Global Holiday Events */}
       <div className="card">
