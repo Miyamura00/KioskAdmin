@@ -13,6 +13,7 @@ import { RateHistory }         from './RateHistory'
 import { ScheduledRates }      from './ScheduledRates'
 import { useGroqRatesExtract } from '../../hooks/useGroqRatesExtract'
 
+const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
 const CATEGORIES = ['weekday','weekend','holiday']
 const CAT_COLORS = { weekday:'#444', weekend:'#1a5276', holiday:'#700909' }
 const DEFAULT_TIME_SLOTS = {
@@ -31,6 +32,14 @@ export function Rates() {
   const isSuperAdmin = userProfile?.role === 'superadmin'
   const fileRef   = useRef(null)
   const aiFileRef = useRef(null)
+
+  // ── Excel Import scheduling ──────────────────────────────
+  const [importModal,     setImportModal]     = useState(false)
+  const [importFile,      setImportFile]      = useState(null)
+  const [importApplyMode, setImportApplyMode] = useState('now') // 'now' | 'schedule'
+  const [importDate,      setImportDate]      = useState('')
+  const [importTime,      setImportTime]      = useState('06:00')
+  const [importLabel,     setImportLabel]     = useState('')
 
   // ── AI Image Import (Groq) ───────────────────────────────
   const { extractAndMap, groqStatus } = useGroqRatesExtract()
@@ -94,6 +103,14 @@ export function Rates() {
   const [schedFrom, setSchedFrom]     = useState('')
   const [schedTo, setSchedTo]         = useState('')
 
+  // weekend schedule modal
+  const [weekendSchedModal, setWeekendSchedModal] = useState(false)
+  const [wkndStartDay,    setWkndStartDay]    = useState(5)
+  const [wkndStartHour,   setWkndStartHour]   = useState(6)
+  const [wkndEndDay,      setWkndEndDay]      = useState(0)
+  const [wkndEndHour,     setWkndEndHour]     = useState(18)
+  const [savingWkndSched, setSavingWkndSched] = useState(false)
+
   // bulk adjust
   const [bulkModal, setBulkModal]         = useState(false)
   const [bulkCat, setBulkCat]             = useState('weekday')
@@ -111,6 +128,7 @@ export function Rates() {
     setRates({}); setTimeSlots(DEFAULT_TIME_SLOTS); setRoomTypes(DEFAULT_ROOM_TYPES)
     setDiRates({}); setDiTimeSlots(DEFAULT_TIME_SLOTS); setDiRoomTypes(DEFAULT_DRIVEIN_TYPES)
     setRateSchedules({}); setDisabledSlots({}); setHasDriveIn(false); setMode('walkin')
+    setWkndStartDay(5); setWkndStartHour(6); setWkndEndDay(0); setWkndEndHour(18)
   }
 
   async function loadRates() {
@@ -129,6 +147,10 @@ export function Rates() {
       setRateSchedules(s.rateSchedules || {})
       setDisabledSlots(s.disabledSlots || {})
       setHasDriveIn(s.hasDriveIn === true)
+      setWkndStartDay(s.weekendStartDay ?? 5)
+      setWkndStartHour(s.weekendStartHour ?? 6)
+      setWkndEndDay(s.weekendEndDay ?? 0)
+      setWkndEndHour(s.weekendEndHour ?? 18)
     } catch (err) { showToast('Error loading: ' + err.message,'error') }
     finally { setLoading(false) }
   }
@@ -386,6 +408,28 @@ export function Rates() {
 
   function clearSchedule() { setSchedFrom(''); setSchedTo('') }
 
+  // ── Weekend Rate Schedule ────────────────────────────────
+  async function saveWeekendSched() {
+    if (!activeBranchId) { showToast('Select a branch first.', 'warn'); return }
+    setSavingWkndSched(true)
+    try {
+      const snap = await db.collection('branches').doc(activeBranchId).get()
+      const currentSettings = snap.data()?.settings || {}
+      const updated = {
+        ...currentSettings,
+        weekendStartDay:  wkndStartDay,
+        weekendStartHour: wkndStartHour,
+        weekendEndDay:    wkndEndDay,
+        weekendEndHour:   wkndEndHour,
+      }
+      await db.collection('branches').doc(activeBranchId).update({ settings: updated })
+      await logAction('UPDATE_SCHEDULE', `Updated weekend rate schedule for ${branchName}`, activeBranchId, branchName)
+      showToast('Weekend schedule saved!')
+      setWeekendSchedModal(false)
+    } catch (err) { showToast('Error: ' + err.message, 'error') }
+    finally { setSavingWkndSched(false) }
+  }
+
   // ── Toggle Slot Disabled ────────────────────────────────
   async function toggleSlotDisabled(cat, slot) {
     const key = `${cat}.${slot}`
@@ -526,20 +570,125 @@ export function Rates() {
     reader.readAsArrayBuffer(file)
   }
 
+  // ── Confirm Import (immediate or scheduled) ──────────────
+  async function confirmImport() {
+    if (!importFile) return
+    setImportModal(false)
+
+    if (importApplyMode === 'now') {
+      handleExcelImport(importFile)
+      return
+    }
+
+    // Schedule the imported rates as a future absolute change
+    if (!importDate) { showToast('Pick a date to schedule the import.', 'warn'); return }
+    if (!activeBranchId) { showToast('Select a branch first.', 'warn'); return }
+
+    const reader = new FileReader()
+    reader.onload = async e => {
+      try {
+        const data   = new Uint8Array(e.target.result)
+        const wb     = XLSX.read(data, { type:'array' })
+        const sheet  = wb.Sheets[wb.SheetNames[0]]
+        const rows   = XLSX.utils.sheet_to_json(sheet, { header:1, defval:'' })
+        const parsed = parseExcel(rows)
+
+        if (!parsed) { showToast('Could not parse rates from the file.', 'error'); return }
+
+        const newRates = {}
+        CATEGORIES.forEach(cat => {
+          newRates[cat] = {}
+          ;(activeTSlots[cat] || []).forEach(slot => {
+            newRates[cat][slot] = parsed[cat]?.[slot] || Array(activeRTypes.length).fill(0)
+          })
+        })
+
+        const applyAt = new Date(`${importDate}T${importTime || '06:00'}`).toISOString()
+        const label   = importLabel.trim() || `Imported from ${importFile.name}`
+
+        await db.collection('branches').doc(activeBranchId)
+          .collection('scheduledRates').add({
+            label, applyAt, newRates, mode,
+            status:           'pending',
+            adjType:          null,
+            adjAmount:        null,
+            adjSlots:         [],
+            adjRooms:         [],
+            isAbsoluteImport: true,
+            createdAt:        firebase.firestore.FieldValue.serverTimestamp(),
+            createdBy:        currentUser.email,
+            createdByName:    userProfile?.displayName || currentUser.email,
+          })
+
+        await logAction(
+          'IMPORT_SCHEDULED_RATES',
+          `Scheduled imported rates from "${importFile.name}" for ${applyAt}`,
+          activeBranchId, branchName
+        )
+        showToast(`✅ Scheduled for ${new Date(applyAt).toLocaleString('en-US', {
+          month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:true,
+        })}`)
+      } catch (err) {
+        showToast('Schedule import error: ' + err.message, 'error')
+      }
+    }
+    reader.readAsArrayBuffer(importFile)
+  }
+
   function parseExcel(rows) {
     const result = { weekday:{}, weekend:{}, holiday:{} }
     let currentCat = null
+    // colMap[excelColOffset] = activeRTypes index — built from the header row
+    let colMap = null
+
     for (const row of rows) {
-      if (!row || !row[0]) continue
-      const first = String(row[0]).trim()
+      if (!row) continue
+      const first = String(row[0] ?? '').trim()
+
+      // ── Header row detection ─────────────────────────────
+      // The exported header looks like: ['', 'Econo', 'Premium', 'Deluxe', ...]
+      // first cell is blank; subsequent cells are room type names.
+      // We must parse this BEFORE the first === marker so we know column order.
+      if (!first && row.length > 1 && currentCat === null && colMap === null) {
+        colMap = {}
+        for (let i = 1; i < row.length; i++) {
+          const colName = String(row[i] || '').trim()
+          if (!colName) continue
+          // Case-insensitive match against activeRTypes
+          const rtIdx = activeRTypes.findIndex(
+            rt => rt.trim().toLowerCase() === colName.toLowerCase()
+          )
+          if (rtIdx !== -1) colMap[i - 1] = rtIdx
+        }
+        continue
+      }
+
+      if (!first) continue  // skip other empty-first-cell rows
+
       if (first.includes('=== WEEKDAY')) { currentCat = 'weekday'; continue }
       if (first.includes('=== WEEKEND')) { currentCat = 'weekend'; continue }
       if (first.includes('=== HOLIDAY')) { currentCat = 'holiday'; continue }
       if (first.startsWith('===')) { currentCat = null; continue }
       if (!currentCat) continue
-      const vals = row.slice(1).map(v => Number(v)||0)
-      if (vals.length > 0 && first.length > 0 && !first.toLowerCase().includes('saved')) {
-        result[currentCat][first] = vals.slice(0, activeRTypes.length)
+
+      const rawVals = row.slice(1)
+      if (rawVals.length > 0 && !first.toLowerCase().includes('saved')) {
+        const vals = Array(activeRTypes.length).fill(0)
+
+        if (colMap && Object.keys(colMap).length > 0) {
+          // ✅ Header-mapped: each Excel column goes to the correct activeRTypes index
+          // regardless of the order they appear in the spreadsheet.
+          rawVals.forEach((v, i) => {
+            if (colMap[i] !== undefined) vals[colMap[i]] = Number(v) || 0
+          })
+        } else {
+          // Fallback: positional (no header row found or no header matches)
+          rawVals.slice(0, activeRTypes.length).forEach((v, i) => {
+            vals[i] = Number(v) || 0
+          })
+        }
+
+        result[currentCat][first] = vals
       }
     }
     return Object.values(result).some(c => Object.keys(c).length > 0) ? result : null
@@ -751,6 +900,7 @@ export function Rates() {
                 <button className="btn btn-outline" onClick={() => setRoomModal(true)}>🛏 Room Types</button>
               </>
             )}
+            <button className="btn btn-outline" onClick={() => setWeekendSchedModal(true)}>🗓 Weekend Schedule</button>
             <button className="btn btn-outline" onClick={() => {
               setBulkCat('weekday')
               setBulkSlots([])
@@ -761,7 +911,17 @@ export function Rates() {
             }}>📈 Bulk Adjust</button>
             <button className="btn btn-outline" onClick={() => fileRef.current?.click()}>📥 Import Excel</button>
             <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display:'none' }}
-              onChange={e => { if(e.target.files[0]) handleExcelImport(e.target.files[0]); e.target.value='' }} />
+              onChange={e => {
+                const f = e.target.files[0]
+                if (!f) return
+                e.target.value = ''
+                setImportFile(f)
+                setImportApplyMode('now')
+                setImportDate('')
+                setImportTime('06:00')
+                setImportLabel('')
+                setImportModal(true)
+              }} />
             <button className="btn btn-outline"
               onClick={() => { setAiPreview(null); setAiModal(true) }}
               title="Upload a photo of a rates sheet — AI auto-fills the table">
@@ -1261,6 +1421,172 @@ export function Rates() {
             You can still edit values after copying. Remember to click <strong>Save Rates</strong>.
           </div>
         )}
+      </Modal>
+
+      {/* ── Weekend Schedule Modal ── */}
+      <Modal show={weekendSchedModal} onClose={() => setWeekendSchedModal(false)}
+        title="🗓 Weekend Rate Schedule"
+        actions={
+          <>
+            <button className="btn btn-ghost" onClick={() => setWeekendSchedModal(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={saveWeekendSched} disabled={savingWkndSched}>
+              {savingWkndSched ? 'Saving…' : '✔ Save Schedule'}
+            </button>
+          </>
+        }
+      >
+        <p style={{ color:'#666', fontSize:'0.83rem', marginBottom:14 }}>
+          Define when weekend rates apply for <strong>{branchName}</strong>. The kiosk will automatically switch to weekend rates during this window.
+        </p>
+        <div className="form-row">
+          <div className="form-group">
+            <label>Weekend Starts (Day)</label>
+            <select value={wkndStartDay} onChange={e => setWkndStartDay(parseInt(e.target.value))}>
+              {DAYS.map((d,i) => <option key={i} value={i}>{d}</option>)}
+            </select>
+          </div>
+          <div className="form-group">
+            <label>At Hour (0–23)</label>
+            <input type="number" min="0" max="23" value={wkndStartHour}
+              onChange={e => setWkndStartHour(parseInt(e.target.value) || 0)} />
+          </div>
+        </div>
+        <div className="form-row">
+          <div className="form-group">
+            <label>Weekend Ends (Day)</label>
+            <select value={wkndEndDay} onChange={e => setWkndEndDay(parseInt(e.target.value))}>
+              {DAYS.map((d,i) => <option key={i} value={i}>{d}</option>)}
+            </select>
+          </div>
+          <div className="form-group">
+            <label>At Hour (0–23)</label>
+            <input type="number" min="0" max="23" value={wkndEndHour}
+              onChange={e => setWkndEndHour(parseInt(e.target.value) || 0)} />
+          </div>
+        </div>
+        <div style={{ padding:'10px 14px', background:'#e8f4fd', border:'1px solid #bee3f8',
+          borderRadius:6, fontSize:'0.82rem', color:'#1a6fa0', marginTop:8 }}>
+          💡 Example: Starts <strong>{DAYS[wkndStartDay]} at {String(wkndStartHour).padStart(2,'0')}:00</strong>,
+          ends <strong>{DAYS[wkndEndDay]} at {String(wkndEndHour).padStart(2,'0')}:00</strong>.
+          The kiosk switches to weekend rates automatically within this window.
+        </div>
+      </Modal>
+
+      {/* ── Excel Import Modal ── */}
+      <Modal show={importModal} onClose={() => setImportModal(false)} title="📥 Import Excel Rates">
+        <div style={{ display:'flex', flexDirection:'column', gap:14, minWidth:320 }}>
+
+          {/* File name */}
+          <div style={{
+            padding:'10px 14px', background:'#f0f9ff',
+            border:'1px solid #bae6fd', borderRadius:8,
+            fontSize:'0.82rem', color:'#0369a1',
+          }}>
+            📄 <strong>{importFile?.name}</strong>
+          </div>
+
+          {/* Apply mode */}
+          <div>
+            <div style={{ fontWeight:700, fontSize:'0.8rem', color:'#333', marginBottom:8 }}>
+              When should these rates take effect?
+            </div>
+            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+              {[
+                { val:'now',      icon:'⚡', label:'Apply immediately',  sub:'Rates are loaded into the editor — review and click Save Rates.' },
+                { val:'schedule', icon:'🕐', label:'Schedule for later', sub:'Rates are saved as a pending scheduled change with a future date.' },
+              ].map(opt => (
+                <label key={opt.val} style={{
+                  display:'flex', alignItems:'flex-start', gap:10,
+                  padding:'10px 14px',
+                  border:`2px solid ${importApplyMode === opt.val ? '#2563eb' : '#e0e0e0'}`,
+                  borderRadius:8,
+                  background: importApplyMode === opt.val ? '#eff6ff' : '#fafafa',
+                  cursor:'pointer',
+                }}>
+                  <input
+                    type="radio"
+                    name="importApplyMode"
+                    value={opt.val}
+                    checked={importApplyMode === opt.val}
+                    onChange={() => setImportApplyMode(opt.val)}
+                    style={{ marginTop:3, width:'auto', padding:0 }}
+                  />
+                  <div>
+                    <div style={{ fontWeight:700, fontSize:'0.83rem' }}>{opt.icon} {opt.label}</div>
+                    <div style={{ color:'#666', fontSize:'0.74rem', marginTop:2 }}>{opt.sub}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* Schedule fields — only shown when 'schedule' selected */}
+          {importApplyMode === 'schedule' && (
+            <div style={{
+              display:'flex', flexDirection:'column', gap:10,
+              padding:'12px 14px', background:'#f8fafc',
+              border:'1px solid #e2e8f0', borderRadius:8,
+            }}>
+              <div>
+                <label style={{ fontSize:'0.77rem', fontWeight:600, color:'#555', display:'block', marginBottom:4 }}>
+                  Schedule Label
+                </label>
+                <input
+                  type="text"
+                  placeholder={`Imported from ${importFile?.name || 'file'}`}
+                  value={importLabel}
+                  onChange={e => setImportLabel(e.target.value)}
+                  style={{ width:'100%', padding:'7px 10px', borderRadius:6, border:'1.5px solid #d1d5db', fontSize:'0.83rem' }}
+                />
+              </div>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+                <div>
+                  <label style={{ fontSize:'0.77rem', fontWeight:600, color:'#555', display:'block', marginBottom:4 }}>
+                    Apply Date <span style={{ color:'#e53e3e' }}>*</span>
+                  </label>
+                  <input
+                    type="date"
+                    value={importDate}
+                    onChange={e => setImportDate(e.target.value)}
+                    style={{ width:'100%', padding:'7px 10px', borderRadius:6, border:'1.5px solid #d1d5db', fontSize:'0.83rem' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize:'0.77rem', fontWeight:600, color:'#555', display:'block', marginBottom:4 }}>
+                    Apply Time
+                  </label>
+                  <input
+                    type="time"
+                    value={importTime}
+                    onChange={e => setImportTime(e.target.value)}
+                    style={{ width:'100%', padding:'7px 10px', borderRadius:6, border:'1.5px solid #d1d5db', fontSize:'0.83rem' }}
+                  />
+                </div>
+              </div>
+              {importDate && (
+                <div style={{ fontSize:'0.76rem', color:'#2563eb', background:'#eff6ff', padding:'6px 10px', borderRadius:6 }}>
+                  ✅ Will apply on{' '}
+                  <strong>{new Date(`${importDate}T${importTime || '06:00'}`).toLocaleString('en-US', {
+                    weekday:'short', month:'short', day:'numeric',
+                    hour:'2-digit', minute:'2-digit', hour12:true,
+                  })}</strong>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Actions */}
+          <div style={{ display:'flex', gap:10, justifyContent:'flex-end', marginTop:4 }}>
+            <button className="btn btn-ghost" onClick={() => setImportModal(false)}>Cancel</button>
+            <button
+              className="btn btn-primary"
+              onClick={confirmImport}
+              disabled={importApplyMode === 'schedule' && !importDate}
+            >
+              {importApplyMode === 'now' ? '📥 Import Now' : '🕐 Schedule Import'}
+            </button>
+          </div>
+        </div>
       </Modal>
 
       {/* ── AI Image Import Modal ── */}

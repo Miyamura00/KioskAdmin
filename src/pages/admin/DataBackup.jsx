@@ -87,37 +87,146 @@ function fmtDt(isoStr) {
 
 // ─── Excel Sheet Builders ─────────────────────────────────────────────────────
 
-function buildRateSheet(rates, timeSlots, roomTypes, category, branchName) {
-  const slots    = timeSlots[category] || []
-  const catLabel = category.charAt(0).toUpperCase() + category.slice(1)
+// Converts a Firebase Timestamp, seconds-object, ISO string, or Date to a JS Date
+function toDateObj(val) {
+  if (!val) return null
+  if (val?.toDate)   return val.toDate()
+  if (val?.seconds)  return new Date(val.seconds * 1000)
+  return new Date(val)
+}
 
-  const aoa = [
-    ['Branch:',   branchName],
-    ['Category:', `${catLabel} Rates`],
-    ['Exported:', todayLabel()],
-    [],
-    ['Time Slot', ...roomTypes],
-  ]
-
-  slots.forEach(slot => {
-    const vals = rates[category]?.[slot] || Array(roomTypes.length).fill(0)
-    aoa.push([slot, ...vals.map(v => Number(v) || 0)])
+/**
+ * Builds the AOA rows for an importable rates sheet.
+ * Format matches Rates.jsx exportRates() so backup files can be re-imported directly.
+ *   Row 0 (optional): metaLine string  e.g. "Saved by: … Date: … Mode: walkin"
+ *   Row 1: [null, ...roomTypes]
+ *   Then per-category: "=== WEEKDAY ===" marker, slot rows, empty row
+ */
+function buildImportableRateRows(ratesData, slots, rooms, metaLine) {
+  const rows = []
+  if (metaLine) rows.push([metaLine])
+  rows.push([null, ...rooms])
+  CATEGORIES.forEach(cat => {
+    rows.push([`=== ${cat.toUpperCase()} ===`])
+    ;(slots[cat] || []).forEach(slot => {
+      const vals = (ratesData[cat]?.[slot] || Array(rooms.length).fill(0)).map(v => Number(v) || 0)
+      rows.push([slot, ...vals])
+    })
+    rows.push([])
   })
+  return rows
+}
 
-  aoa.push([])
-  const avgRow = ['Average ₱']
-  roomTypes.forEach((_, ri) => {
-    const nums = slots
-      .map(s => Number(rates[category]?.[s]?.[ri]) || 0)
-      .filter(n => n > 0)
-    avgRow.push(nums.length ? Math.round(nums.reduce((a, b) => a + b, 0) / nums.length) : 0)
-  })
-  aoa.push(avgRow)
+/**
+ * Builds a single importable workbook containing:
+ *   • "Current Rates"        — matches parseExcel() format → direct import
+ *   • "History N – date"     — each snapshot in same format (importable individually)
+ *   • "Scheduled Changes"    — same template as exportRates() → direct import
+ *   • "Weekend Transition"   — informational
+ *   • Drive-in equivalents if inclDriveIn
+ */
+function buildImportableRatesWorkbook({
+  rates, diRates,
+  history, diHistory,
+  walkinSchedules, diSchedules,
+  timeSlots, roomTypes,
+  diTimeSlots, diRoomTypes,
+  settings, branchName,
+  inclHistory, inclDriveIn,
+}) {
+  const wb       = XLSX.utils.book_new()
+  const colWidths = rooms => [{ wch:15 }, ...rooms.map(() => ({ wch:13 }))]
 
-  const ws    = XLSX.utils.aoa_to_sheet(aoa)
-  ws['!cols'] = [{ wch:15 }, ...roomTypes.map(() => ({ wch:13 }))]
-  ws['!rows'] = [null, null, null, null, { hpt:16 }]
-  return ws
+  function makeSchedSheet(schedules, modeName, label) {
+    const rows = [
+      [`SCHEDULED RATE CHANGES — ${label}`],
+      [`Mode: ${modeName}`],
+      [],
+      ['Label','Apply Date (YYYY-MM-DD)','Apply Time (HH:MM)',
+       'Type (increase/decrease/set)','Amount (₱)',
+       'Affected Slots (blank=all)','Affected Rooms (blank=all)','Status'],
+      ...(schedules || []).map(sc => {
+        const applyDt = sc.applyAt ? new Date(sc.applyAt) : null
+        return [
+          sc.label      || '',
+          applyDt ? applyDt.toISOString().slice(0,10) : '',
+          applyDt ? applyDt.toISOString().slice(11,16) : '',
+          sc.adjType    || 'increase',
+          sc.adjAmount  ?? 0,
+          (sc.adjSlots  || []).join('; '),
+          (sc.adjRooms  || []).join('; '),
+          sc.status     || 'pending',
+        ]
+      }),
+      [],
+      ['--- TO IMPORT A NEW SCHEDULED CHANGE, FILL A ROW ABOVE AND IMPORT THIS FILE ---'],
+    ]
+    const ws    = XLSX.utils.aoa_to_sheet(rows)
+    ws['!cols'] = [
+      { wch:40 },{ wch:22 },{ wch:16 },{ wch:28 },
+      { wch:12 },{ wch:30 },{ wch:24 },{ wch:12 },
+    ]
+    return ws
+  }
+
+  // 1. Current Walk-In Rates
+  const curWs    = XLSX.utils.aoa_to_sheet(buildImportableRateRows(rates, timeSlots, roomTypes, null))
+  curWs['!cols'] = colWidths(roomTypes)
+  XLSX.utils.book_append_sheet(wb, curWs, 'Current Rates')
+
+  // 2. Rate History (importable — each sheet is a standalone importable snapshot)
+  if (inclHistory) {
+    history.forEach((entry, idx) => {
+      const tsDate  = toDateObj(entry.savedAt || entry.recordedAt || entry.createdAt)
+      const dateStr = tsDate ? tsDate.toISOString().slice(0,10) : nowStamp()
+      const savedBy = entry.savedByName || entry.savedBy || entry.changedBy || '—'
+      const meta    = `Saved by: ${savedBy}   Date: ${fmtDt(tsDate?.toISOString())}   Mode: walkin`
+      const name    = `History ${idx + 1} - ${dateStr}`.slice(0,31)
+      const ws      = XLSX.utils.aoa_to_sheet(
+        buildImportableRateRows(entry.rates || {}, timeSlots, roomTypes, meta)
+      )
+      ws['!cols']   = colWidths(roomTypes)
+      XLSX.utils.book_append_sheet(wb, ws, name)
+    })
+  }
+
+  // 3. Scheduled Changes (importable)
+  XLSX.utils.book_append_sheet(
+    wb, makeSchedSheet(walkinSchedules, 'walkin', branchName), 'Scheduled Changes'
+  )
+
+  // 4. Weekend Transition (informational)
+  XLSX.utils.book_append_sheet(wb, buildTransitionSheet(settings, branchName), 'Weekend Transition')
+
+  // 5. Drive-In sheets
+  if (inclDriveIn) {
+    const diWs    = XLSX.utils.aoa_to_sheet(buildImportableRateRows(diRates, diTimeSlots, diRoomTypes, null))
+    diWs['!cols'] = colWidths(diRoomTypes)
+    XLSX.utils.book_append_sheet(wb, diWs, 'Drive-In Rates')
+
+    if (inclHistory) {
+      diHistory.forEach((entry, idx) => {
+        const tsDate  = toDateObj(entry.savedAt || entry.recordedAt)
+        const dateStr = tsDate ? tsDate.toISOString().slice(0,10) : nowStamp()
+        const savedBy = entry.savedByName || entry.savedBy || '—'
+        const meta    = `Saved by: ${savedBy}   Date: ${fmtDt(tsDate?.toISOString())}   Mode: drivein`
+        const name    = `DI History ${idx + 1} - ${dateStr}`.slice(0,31)
+        const ws      = XLSX.utils.aoa_to_sheet(
+          buildImportableRateRows(entry.rates || {}, diTimeSlots, diRoomTypes, meta)
+        )
+        ws['!cols']   = colWidths(diRoomTypes)
+        XLSX.utils.book_append_sheet(wb, ws, name)
+      })
+    }
+
+    XLSX.utils.book_append_sheet(
+      wb,
+      makeSchedSheet(diSchedules, 'drivein', `${branchName} (Drive-In)`),
+      'DI Scheduled Changes'
+    )
+  }
+
+  return wb
 }
 
 function buildTransitionSheet(settings, branchName) {
@@ -150,161 +259,9 @@ function buildTransitionSheet(settings, branchName) {
   return ws
 }
 
-/**
- * Rate History sheet — 3 most recent snapshots.
- * Assumes rateHistory docs have:
- *   recordedAt (ISO string), rates { weekday, weekend, holiday },
- *   optionally: label, changedBy, type
- */
-function buildRateHistorySheet(history, timeSlots, roomTypes, branchName) {
-  const aoa = [
-    ['Branch:',   branchName],
-    ['Exported:', todayLabel()],
-    [`Showing ${history.length} most recent rate snapshot(s)`],
-    [],
-  ]
 
-  history.forEach((entry, idx) => {
-    const ts    = entry.recordedAt || entry.createdAt || entry.timestamp || null
-    const rates = entry.rates      || entry.newRates  || entry.rateData  || {}
 
-    aoa.push([`── Snapshot ${idx + 1} of ${history.length} ──`])
-    aoa.push(['Date Recorded:', fmtDt(ts)])
-    if (entry.label)     aoa.push(['Label:',      entry.label])
-    if (entry.changedBy) aoa.push(['Changed By:', entry.changedBy])
-    if (entry.type)      aoa.push(['Type:',       entry.type])
-    aoa.push([])
 
-    let hasAnyRate = false
-    CATEGORIES.forEach(cat => {
-      const catRates = rates[cat]
-      if (!catRates || !Object.keys(catRates).length) return
-      hasAnyRate = true
-
-      const slots    = timeSlots[cat] || Object.keys(catRates)
-      const catLabel = cat.charAt(0).toUpperCase() + cat.slice(1)
-
-      aoa.push([`${catLabel} Rates`, ...roomTypes])
-      slots.forEach(slot => {
-        if (!catRates[slot]) return
-        aoa.push([slot, ...(catRates[slot] || []).map(v => Number(v) || 0)])
-      })
-      aoa.push([])
-    })
-
-    if (!hasAnyRate) aoa.push(['(No rate data in this snapshot)'])
-    aoa.push([])
-  })
-
-  const ws    = XLSX.utils.aoa_to_sheet(aoa)
-  ws['!cols'] = [{ wch:20 }, ...roomTypes.map(() => ({ wch:13 }))]
-  return ws
-}
-
-function buildScheduledWorkbook(schedules, timeSlots, roomTypes, branchName, mode) {
-  const wb = XLSX.utils.book_new()
-
-  const summaryAoa = [
-    ['Branch:',   branchName],
-    ['Mode:',     mode === 'drivein' ? 'Drive-In' : 'Walk-In'],
-    ['Exported:', todayLabel()],
-    [],
-    ['#', 'Label', 'Apply Date', 'Apply Time', 'Status', 'Type',
-     'Rollback At', 'Adj. Type', 'Adj. Amount', 'Slots Targeted', 'Rooms Targeted'],
-  ]
-
-  schedules.forEach((s, i) => {
-    const applyDt    = s.applyAt    ? new Date(s.applyAt)    : null
-    const rollDt     = s.rollbackAt ? new Date(s.rollbackAt) : null
-    const isAbsolute = !!s.newRates
-
-    if (isAbsolute) {
-      summaryAoa.push([
-        i + 1, s.label || '—',
-        applyDt ? applyDt.toLocaleDateString('en-US', { year:'numeric', month:'short', day:'numeric' }) : '—',
-        applyDt ? applyDt.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', hour12:true }) : '—',
-        (s.status || 'pending').toUpperCase(),
-        'Absolute (see detail sheet)',
-        rollDt ? fmtDt(s.rollbackAt) : '—',
-        '—', '—', '—', '—',
-      ])
-    } else {
-      const adjs = s.adjustments || []
-      if (!adjs.length) {
-        summaryAoa.push([
-          i + 1, s.label || '—',
-          applyDt ? applyDt.toLocaleDateString('en-US', { year:'numeric', month:'short', day:'numeric' }) : '—',
-          applyDt ? applyDt.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', hour12:true }) : '—',
-          (s.status || 'pending').toUpperCase(), 'Adjustment',
-          rollDt ? fmtDt(s.rollbackAt) : '—', '—', '—', '—', '—',
-        ])
-      } else {
-        adjs.forEach((adj, ai) => {
-          const slotsList = adj.slots?.length
-            ? adj.slots.map(k => k.split(':').pop()).join(', ')
-            : 'All slots'
-          const roomsList = adj.rooms?.length
-            ? adj.rooms.map(ri => roomTypes[ri] || `Room ${ri}`).join(', ')
-            : 'All rooms'
-
-          summaryAoa.push([
-            ai === 0 ? i + 1 : '',
-            ai === 0 ? (s.label || '—') : '',
-            ai === 0 ? (applyDt ? applyDt.toLocaleDateString('en-US', { year:'numeric', month:'short', day:'numeric' }) : '—') : '',
-            ai === 0 ? (applyDt ? applyDt.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', hour12:true }) : '—') : '',
-            ai === 0 ? (s.status || 'pending').toUpperCase() : '',
-            ai === 0 ? 'Adjustment' : '',
-            ai === 0 ? (rollDt ? fmtDt(s.rollbackAt) : '—') : '',
-            adj.type   ? adj.type.charAt(0).toUpperCase() + adj.type.slice(1) : '—',
-            adj.amount != null ? `₱${adj.amount}` : '—',
-            slotsList, roomsList,
-          ])
-        })
-      }
-    }
-  })
-
-  const summaryWs = XLSX.utils.aoa_to_sheet(summaryAoa)
-  summaryWs['!cols'] = [
-    { wch:4 },{ wch:32 },{ wch:14 },{ wch:10 },{ wch:12 },
-    { wch:24 },{ wch:22 },{ wch:12 },{ wch:12 },{ wch:36 },{ wch:28 },
-  ]
-  XLSX.utils.book_append_sheet(wb, summaryWs, 'All Schedules')
-
-  schedules.forEach((s, i) => {
-    if (!s.newRates) return
-    const sheetLabel = `Sched ${(i + 1).toString().padStart(2, '0')}`
-    const detailAoa  = [
-      ['Label:',       s.label   || '—'],
-      ['Apply At:',    fmtDt(s.applyAt)],
-      ['Status:',     (s.status  || 'pending').toUpperCase()],
-      ['Mode:',        mode === 'drivein' ? 'Drive-In' : 'Walk-In'],
-      ['Rollback At:', s.withRollback ? fmtDt(s.rollbackAt) : 'None'],
-      [],
-    ]
-
-    CATEGORIES.forEach(cat => {
-      const catRates = s.newRates[cat]
-      if (!catRates || !Object.keys(catRates).length) return
-      const slots    = timeSlots[cat] || Object.keys(catRates)
-      const catLabel = cat.charAt(0).toUpperCase() + cat.slice(1)
-
-      detailAoa.push([`── ${catLabel.toUpperCase()} RATES ──`])
-      detailAoa.push(['Time Slot', ...roomTypes])
-      slots.forEach(slot => {
-        if (!catRates[slot]) return
-        detailAoa.push([slot, ...(catRates[slot] || []).map(v => Number(v) || 0)])
-      })
-      detailAoa.push([])
-    })
-
-    const ws    = XLSX.utils.aoa_to_sheet(detailAoa)
-    ws['!cols'] = [{ wch:16 }, ...roomTypes.map(() => ({ wch:13 }))]
-    XLSX.utils.book_append_sheet(wb, ws, sheetLabel)
-  })
-
-  return wb
-}
 
 function buildHolidaysWorkbook(holidays, allBranches) {
   const wb  = XLSX.utils.book_new()
@@ -389,7 +346,6 @@ export function DataBackup() {
   const [selectedIds,   setSelectedIds]   = useState([])
   const [inclRates,     setInclRates]     = useState(true)
   const [inclRateHist,  setInclRateHist]  = useState(true)
-  const [inclScheduled, setInclScheduled] = useState(true)
   const [inclHolidays,  setInclHolidays]  = useState(true)
   const [inclDriveIn,   setInclDriveIn]   = useState(true)
   const [running,       setRunning]        = useState(false)
@@ -443,7 +399,6 @@ export function DataBackup() {
 
   const fileCount =
     targetBranches.length * (inclRates ? 1 : 0) +
-    targetBranches.length * (inclScheduled ? (inclDriveIn ? 1.5 : 1) : 0) +
     (inclHolidays ? 1 : 0)
 
   // ── Save auto-backup schedule to Firestore ────────────────────────────────────
@@ -487,7 +442,7 @@ export function DataBackup() {
 
   // ── Main export handler ───────────────────────────────────────────────────────
   async function runExport({ auto = false } = {}) {
-    if (!inclRates && !inclScheduled && !inclHolidays) {
+    if (!inclRates && !inclHolidays) {
       showToast('Select at least one export type.', 'warn'); return
     }
     if (!targetBranches.length) {
@@ -538,105 +493,88 @@ export function DataBackup() {
         const diTimeSlots = s.driveInTimeSlots || DEFAULT_TIME_SLOTS
         const diRoomTypes = s.driveInRoomTypes || DEFAULT_DRIVEIN_TYPES
 
-        // ── 2a. CURRENT RATES + optional RATE HISTORY ────────────────────────
+        // ── 2a. RATES — importable workbook (Current + History + Schedules) ──
         if (inclRates) {
           setProgress(`Building rates: ${bName}…`)
-          appendLog('   💰 Building current rates…')
+          appendLog('   💰 Building importable rates workbook…')
 
           const rates   = data.rates        || {}
           const diRates = data.driveInRates || {}
-          const wb      = XLSX.utils.book_new()
 
-          CATEGORIES.forEach(cat => {
-            const ws    = buildRateSheet(rates, timeSlots, roomTypes, cat, bName)
-            const label = cat.charAt(0).toUpperCase() + cat.slice(1)
-            XLSX.utils.book_append_sheet(wb, ws, label)
-          })
-
-          XLSX.utils.book_append_sheet(wb, buildTransitionSheet(s, bName), 'Weekend Transition')
-
-          if (hasDriveIn && inclDriveIn) {
-            CATEGORIES.forEach(cat => {
-              const ws    = buildRateSheet(diRates, diTimeSlots, diRoomTypes, cat, `${bName} (Drive-In)`)
-              const label = `DI ${cat.charAt(0).toUpperCase() + cat.slice(1)}`
-              XLSX.utils.book_append_sheet(wb, ws, label)
-            })
-            appendLog('      🚗 Drive-In sheets included')
-          }
-
-          // Rate History — 3 most recent snapshots
+          // Fetch walk-in rate history (top 3, importable sheets)
+          let walkinHistory = []
           if (inclRateHist) {
             setProgress(`Fetching rate history: ${bName}…`)
             try {
               const histSnap = await db
                 .collection('branches').doc(branch.id)
                 .collection('rateHistory')
-                .orderBy('recordedAt', 'desc')
+                .orderBy('savedAt', 'desc')
                 .limit(3)
                 .get()
-
-              if (histSnap.empty) {
-                appendLog('      ℹ️ No rate history — sheet skipped')
-              } else {
-                const history = histSnap.docs.map(d => ({ id: d.id, ...d.data() }))
-                XLSX.utils.book_append_sheet(
-                  wb,
-                  buildRateHistorySheet(history, timeSlots, roomTypes, bName),
-                  'Rate History'
-                )
-                appendLog(`      📈 ${history.length} rate history snapshot(s) included`)
-              }
-            } catch (histErr) {
-              appendLog(`      ⚠️ Rate history unavailable: ${histErr.message}`)
+              walkinHistory = histSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+              appendLog(`      📈 ${walkinHistory.length} history snapshot(s) included`)
+            } catch (e) {
+              appendLog(`      ⚠️ Rate history unavailable: ${e.message}`)
             }
           }
 
-          folder.file(`${bFile}_rates.xlsx`, wbToBuffer(wb))
-          appendLog(`   ✅ ${bFile}_rates.xlsx`)
-        }
+          // Fetch drive-in history
+          let diHistory = []
+          if (inclRateHist && hasDriveIn && inclDriveIn) {
+            try {
+              const diHistSnap = await db
+                .collection('branches').doc(branch.id)
+                .collection('rateHistory')
+                .where('mode', '==', 'drivein')
+                .orderBy('savedAt', 'desc')
+                .limit(3)
+                .get()
+              diHistory = diHistSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+            } catch (e) { /* non-fatal */ }
+          }
 
-        // ── 2b. SCHEDULED RATES (skipped if no data) ─────────────────────────
-        if (inclScheduled) {
-          setProgress(`Fetching schedules: ${bName}…`)
-          const modesNeeded = ['walkin']
-          if (hasDriveIn && inclDriveIn) modesNeeded.push('drivein')
-
-          for (const mode of modesNeeded) {
-            const modeLabel = mode === 'drivein' ? 'Drive-In' : 'Walk-In'
-            appendLog(`   ⏰ Fetching scheduled rates (${modeLabel})…`)
-
-            // No orderBy = no composite index needed; sorted client-side
-            const schedSnap = await db
+          // Fetch scheduled rates for the importable Scheduled Changes sheet
+          let walkinScheds = [], diScheds = []
+          try {
+            const wsSnap = await db
               .collection('branches').doc(branch.id)
               .collection('scheduledRates')
-              .where('mode', '==', mode)
+              .where('mode', '==', 'walkin')
               .get()
-
-            const schedules = schedSnap.docs
+            walkinScheds = wsSnap.docs
               .map(d => ({ id: d.id, ...d.data() }))
-              .sort((a, b) => {
-                const tA = a.applyAt ? new Date(a.applyAt).getTime() : 0
-                const tB = b.applyAt ? new Date(b.applyAt).getTime() : 0
-                return tA - tB
-              })
+              .sort((a, b) => new Date(a.applyAt || 0) - new Date(b.applyAt || 0))
 
-            // ✅ Skip if empty — no file generated
-            if (schedules.length === 0) {
-              appendLog(`   ℹ️ No scheduled rates (${modeLabel}) — skipped`)
-              continue
+            if (hasDriveIn && inclDriveIn) {
+              const dsSnap = await db
+                .collection('branches').doc(branch.id)
+                .collection('scheduledRates')
+                .where('mode', '==', 'drivein')
+                .get()
+              diScheds = dsSnap.docs
+                .map(d => ({ id: d.id, ...d.data() }))
+                .sort((a, b) => new Date(a.applyAt || 0) - new Date(b.applyAt || 0))
             }
-
-            const activeRT = mode === 'drivein' ? diRoomTypes : roomTypes
-            const activeTS = mode === 'drivein' ? diTimeSlots : timeSlots
-            const suffix   = mode === 'drivein' ? '_drivein' : ''
-            const filename = `${bFile}_scheduled${suffix}.xlsx`
-
-            folder.file(filename, wbToBuffer(buildScheduledWorkbook(schedules, activeTS, activeRT, bName, mode)))
-
-            const pending = schedules.filter(s => s.status === 'pending').length
-            appendLog(`   ✅ ${filename} — ${schedules.length} entries (${pending} pending)`)
+          } catch (e) {
+            appendLog(`      ⚠️ Scheduled rates unavailable: ${e.message}`)
           }
+
+          const wb = buildImportableRatesWorkbook({
+            rates, diRates,
+            history: walkinHistory, diHistory,
+            walkinSchedules: walkinScheds, diSchedules: diScheds,
+            timeSlots, roomTypes, diTimeSlots, diRoomTypes,
+            settings: s, branchName: bName,
+            inclHistory: inclRateHist,
+            inclDriveIn: hasDriveIn && inclDriveIn,
+          })
+
+          if (hasDriveIn && inclDriveIn) appendLog('      🚗 Drive-In sheets included')
+          folder.file(`${bFile}_rates.xlsx`, wbToBuffer(wb))
+          appendLog(`   ✅ ${bFile}_rates.xlsx (importable: Rates + History + Schedules)`)
         }
+
       }
 
       // ── 3. GENERATE & DOWNLOAD ZIP ─────────────────────────────────────────
@@ -650,9 +588,8 @@ export function DataBackup() {
       appendLog(`\n✅ Download started: ${filename}`)
       appendLog(`   Branches: ${targetBranches.length}`)
       appendLog(`   Exported: ${[
-        inclRates     && 'Current Rates',
+        inclRates     && 'Current Rates + Schedules',
         inclRateHist  && 'Rate History',
-        inclScheduled && 'Scheduled Rates',
         inclHolidays  && 'Holidays',
       ].filter(Boolean).join(', ')}`)
 
@@ -744,10 +681,7 @@ export function DataBackup() {
               desc="Weekday, Weekend & Holiday tables including 10HRS ONP plus the Weekend Transition schedule." />
             <CheckCard checked={inclRateHist}  onChange={setInclRateHist}
               icon="📈" title="Rate History (Top 3)"
-              desc="3 most recent rate snapshots per branch with recorded dates. Sheet is skipped if no history exists." />
-            <CheckCard checked={inclScheduled} onChange={setInclScheduled}
-              icon="⏰" title="Scheduled Rates"
-              desc="Pending and past rate schedules. Automatically skipped per branch if no data found." />
+              desc="3 most recent rate snapshots per branch — each in importable format so any snapshot can be re-imported directly. Skipped if no history exists." />
             <CheckCard checked={inclHolidays}  onChange={setInclHolidays}
               icon="📅" title="Holiday Events"
               desc="Global holiday calendar with dates, times, and assigned branches. Skipped if none." />
@@ -768,18 +702,10 @@ export function DataBackup() {
               <div>💰 <code>{'{branch}_rates.xlsx'}</code>
                 <span style={{ color:'#888' }}> × {targetBranches.length}</span>
                 <div style={{ color:'#888', paddingLeft:16, fontSize:'0.72rem' }}>
-                  Sheets: Weekday, Weekend, Holiday, Weekend Transition
-                  {inclRateHist ? ', Rate History (if data exists)' : ''}
-                  {inclDriveIn  ? ', DI Weekday, DI Weekend, DI Holiday' : ''}
-                </div>
-              </div>
-            )}
-            {inclScheduled && (
-              <div>⏰ <code>{'{branch}_scheduled.xlsx'}</code>
-                <span style={{ color:'#888' }}> × up to {targetBranches.length}</span>
-                <div style={{ color:'#888', paddingLeft:16, fontSize:'0.72rem' }}>
-                  Skipped if branch has no scheduled rates.
-                  {inclDriveIn ? ' Drive-In version also generated if data exists.' : ''}
+                  Sheets: <strong>Current Rates</strong> (importable), <strong>Scheduled Changes</strong> (importable)
+                  {inclRateHist ? ', History 1–3 (each importable)' : ''}
+                  {', Weekend Transition'}
+                  {inclDriveIn  ? ', Drive-In Rates, DI Scheduled Changes' : ''}
                 </div>
               </div>
             )}
