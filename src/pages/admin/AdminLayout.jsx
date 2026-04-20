@@ -148,9 +148,9 @@ export function AdminLayout() {
   const windowW    = useWindowWidth()
   const isMobile   = windowW <= 768
 
-  // Persist sidebar collapsed state
-  const [collapsed, setCollapsed] = useState(() =>
-    localStorage.getItem('admin_sidebar_collapsed') === 'true'
+  // Desktop: true = sidebar fully hidden, false = fully visible
+  const [sidebarHidden, setSidebarHidden] = useState(() =>
+    localStorage.getItem('admin_sidebar_hidden') === 'true'
   )
   const [mobileOpen, setMobileOpen] = useState(false)
 
@@ -166,10 +166,10 @@ export function AdminLayout() {
   // Close mobile sidebar on route change
   useEffect(() => { setMobileOpen(false) }, [location.pathname])
 
-  // Persist collapse state
+  // Persist hidden state
   useEffect(() => {
-    localStorage.setItem('admin_sidebar_collapsed', collapsed)
-  }, [collapsed])
+    localStorage.setItem('admin_sidebar_hidden', sidebarHidden)
+  }, [sidebarHidden])
 
   // Prevent body scroll when mobile sidebar is open
   useEffect(() => {
@@ -187,7 +187,7 @@ export function AdminLayout() {
     if (isMobile) {
       setMobileOpen(o => !o)
     } else {
-      setCollapsed(c => !c)
+      setSidebarHidden(h => !h)  // fully hide / fully show
     }
   }, [isMobile])
 
@@ -198,7 +198,7 @@ export function AdminLayout() {
 
   const layoutClass = [
     'admin-layout',
-    !isMobile && collapsed ? 'sidebar-collapsed' : '',
+    !isMobile && sidebarHidden ? 'sidebar-hidden' : '',
   ].filter(Boolean).join(' ')
 
   return (
@@ -287,7 +287,7 @@ export function AdminLayout() {
               onClick={handleToggle}
               aria-label={isMobile
                 ? (mobileOpen ? 'Close menu' : 'Open menu')
-                : (collapsed ? 'Expand sidebar' : 'Collapse sidebar')
+                : (sidebarHidden ? 'Show sidebar' : 'Hide sidebar')
               }
             >
               <IconMenu />

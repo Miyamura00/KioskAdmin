@@ -40,6 +40,9 @@ export function Rates() {
   const [importDate,      setImportDate]      = useState('')
   const [importTime,      setImportTime]      = useState('06:00')
   const [importLabel,     setImportLabel]     = useState('')
+  // ── Excel preview (parsed rates for display before apply) ─
+  const [excelPreview,    setExcelPreview]    = useState(null)  // { parsed, summary } | null
+  const [excelParsing,    setExcelParsing]    = useState(false)
 
   // ── AI Image Import (Groq) ───────────────────────────────
   const { extractAndMap, groqStatus } = useGroqRatesExtract()
@@ -218,13 +221,11 @@ export function Rates() {
     const slots = [...(activeTSlots[cat] || [])]
     const target = idx + dir
     if (target < 0 || target >= slots.length) return
-    // Swap in slot list
     const tmp = slots[idx]; slots[idx] = slots[target]; slots[target] = tmp
     const updated = { ...activeTSlots, [cat]: slots }
-    // Swap matching rate rows so prices follow the slot
     activeSetRates(prev => {
       const catRates = { ...(prev[cat] || {}) }
-      return { ...prev, [cat]: catRates }  // rates are keyed by name, order doesn't matter
+      return { ...prev, [cat]: catRates }
     })
     await persistSlots(updated)
   }
@@ -233,10 +234,8 @@ export function Rates() {
   async function moveRoomType(idx, dir) {
     const target = idx + dir
     if (target < 0 || target >= activeRTypes.length) return
-    // Swap room type names
     const newTypes = [...activeRTypes]
     const tmp = newTypes[idx]; newTypes[idx] = newTypes[target]; newTypes[target] = tmp
-    // Swap the rate VALUE at that column index across ALL cats and slots
     activeSetRates(prev => {
       const next = {}
       CATEGORIES.forEach(cat => {
@@ -256,9 +255,6 @@ export function Rates() {
   async function addSlot(cat) {
     const label = newSlotName.trim().toUpperCase()
     if (!label) { showToast('Enter a slot name.','warn'); return }
-
-    // Generate a unique internal key — allows duplicate display names.
-    // "24HRS" already exists → try "24HRS_2", "24HRS_3", etc.
     const existing = activeTSlots[cat] || []
     let key = label
     if (existing.includes(key)) {
@@ -266,7 +262,6 @@ export function Rates() {
       while (existing.includes(`${label}_${n}`)) n++
       key = `${label}_${n}`
     }
-
     const updated = { ...activeTSlots, [cat]: [...existing, key] }
     activeSetRates(prev => ({
       ...prev, [cat]: { ...(prev[cat]||{}), [key]: Array(activeRTypes.length).fill(0) }
@@ -282,8 +277,6 @@ export function Rates() {
     const { cat, name: oldKey } = editSlot
     const newLabel = editSlotName.trim().toUpperCase()
     if (!newLabel) { showToast('Enter a name.','warn'); return }
-
-    // Build unique new key from label (preserve position, allow duplicates)
     const others = (activeTSlots[cat] || []).filter(s => s !== oldKey)
     let newKey = newLabel
     if (others.includes(newKey)) {
@@ -291,30 +284,22 @@ export function Rates() {
       while (others.includes(`${newLabel}_${n}`)) n++
       newKey = `${newLabel}_${n}`
     }
-
     const updated = { ...activeTSlots, [cat]: activeTSlots[cat].map(s => s === oldKey ? newKey : s) }
-
-    // Move rates to new key
     activeSetRates(prev => {
       const cr = { ...(prev[cat]||{}) }
       if (cr[oldKey] !== undefined) { cr[newKey] = cr[oldKey]; delete cr[oldKey] }
       return { ...prev, [cat]: cr }
     })
-
-    // Move schedule to new key
     setRateSchedules(prev => {
       const ns = { ...(prev[cat]||{}) }
       if (ns[oldKey]) { ns[newKey] = ns[oldKey]; delete ns[oldKey] }
       return { ...prev, [cat]: ns }
     })
-
-    // Move disabledSlots to new key
     setDisabledSlots(prev => {
       const nd = { ...(prev[cat]||{}) }
       if (nd[oldKey] !== undefined) { nd[newKey] = nd[oldKey]; delete nd[oldKey] }
       return { ...prev, [cat]: nd }
     })
-
     await persistSlots(updated)
     await logAction('RENAME_SLOT', `Renamed slot "${oldKey}" → "${newKey}" in ${cat} (${mode})`, activeBranchId, branchName)
     setEditSlot(null)
@@ -432,7 +417,6 @@ export function Rates() {
 
   // ── Toggle Slot Disabled ────────────────────────────────
   async function toggleSlotDisabled(cat, slot) {
-    const key = `${cat}.${slot}`
     const isNowDisabled = !disabledSlots?.[cat]?.[slot]
     const updated = {
       ...disabledSlots,
@@ -519,7 +503,6 @@ export function Rates() {
         const schedSheet = wb.Sheets['Scheduled Changes']
         if (schedSheet && activeBranchId) {
           const schedRows = XLSX.utils.sheet_to_json(schedSheet, { header:1, defval:'' })
-          // Find header row (has 'Label' in first cell)
           const headerIdx = schedRows.findIndex(r => String(r[0]).toLowerCase() === 'label')
           if (headerIdx >= 0) {
             let imported = 0
@@ -533,7 +516,6 @@ export function Rates() {
               const sts  = String(row[7] || '').trim()
               if (!lbl || !date || !amt || sts === 'applied' || sts === 'cancelled') continue
               const applyAt = new Date(date + 'T' + time).toISOString()
-              // Build newRates from current activeRates using the adjustment
               const newRates = {}
               CATEGORIES.forEach(cat => {
                 newRates[cat] = {}
@@ -548,7 +530,6 @@ export function Rates() {
                   newRates[cat][slot] = vals
                 })
               })
-              // adjSlots: [] means apply to all slots (correct for Excel import)
               await db.collection('branches').doc(activeBranchId).collection('scheduledRates').add({
                 label: lbl, applyAt, adjType: type, adjAmount: amt,
                 adjSlots: [], adjRooms: [], newRates, mode, status: 'pending',
@@ -568,6 +549,23 @@ export function Rates() {
       } catch (err) { showToast('Import error: ' + err.message,'error') }
     }
     reader.readAsArrayBuffer(file)
+  }
+
+  // ── Parse Excel file for preview (async, returns parsed rates) ──
+  function parseFileForPreview(file) {
+    return new Promise(resolve => {
+      const reader = new FileReader()
+      reader.onload = e => {
+        try {
+          const data  = new Uint8Array(e.target.result)
+          const wb    = XLSX.read(data, { type:'array' })
+          const sheet = wb.Sheets[wb.SheetNames[0]]
+          const rows  = XLSX.utils.sheet_to_json(sheet, { header:1, defval:'' })
+          resolve(parseExcel(rows))
+        } catch { resolve(null) }
+      }
+      reader.readAsArrayBuffer(file)
+    })
   }
 
   // ── Confirm Import (immediate or scheduled) ──────────────
@@ -615,6 +613,7 @@ export function Rates() {
             adjSlots:         [],
             adjRooms:         [],
             isAbsoluteImport: true,
+            source:           'excel-import',
             createdAt:        firebase.firestore.FieldValue.serverTimestamp(),
             createdBy:        currentUser.email,
             createdByName:    userProfile?.displayName || currentUser.email,
@@ -638,23 +637,17 @@ export function Rates() {
   function parseExcel(rows) {
     const result = { weekday:{}, weekend:{}, holiday:{} }
     let currentCat = null
-    // colMap[excelColOffset] = activeRTypes index — built from the header row
     let colMap = null
 
     for (const row of rows) {
       if (!row) continue
       const first = String(row[0] ?? '').trim()
 
-      // ── Header row detection ─────────────────────────────
-      // The exported header looks like: ['', 'Econo', 'Premium', 'Deluxe', ...]
-      // first cell is blank; subsequent cells are room type names.
-      // We must parse this BEFORE the first === marker so we know column order.
       if (!first && row.length > 1 && currentCat === null && colMap === null) {
         colMap = {}
         for (let i = 1; i < row.length; i++) {
           const colName = String(row[i] || '').trim()
           if (!colName) continue
-          // Case-insensitive match against activeRTypes
           const rtIdx = activeRTypes.findIndex(
             rt => rt.trim().toLowerCase() === colName.toLowerCase()
           )
@@ -663,7 +656,7 @@ export function Rates() {
         continue
       }
 
-      if (!first) continue  // skip other empty-first-cell rows
+      if (!first) continue
 
       if (first.includes('=== WEEKDAY')) { currentCat = 'weekday'; continue }
       if (first.includes('=== WEEKEND')) { currentCat = 'weekend'; continue }
@@ -676,13 +669,10 @@ export function Rates() {
         const vals = Array(activeRTypes.length).fill(0)
 
         if (colMap && Object.keys(colMap).length > 0) {
-          // ✅ Header-mapped: each Excel column goes to the correct activeRTypes index
-          // regardless of the order they appear in the spreadsheet.
           rawVals.forEach((v, i) => {
             if (colMap[i] !== undefined) vals[colMap[i]] = Number(v) || 0
           })
         } else {
-          // Fallback: positional (no header row found or no header matches)
           rawVals.slice(0, activeRTypes.length).forEach((v, i) => {
             vals[i] = Number(v) || 0
           })
@@ -801,7 +791,6 @@ export function Rates() {
       if (!aiSchedDate)         { showToast('Pick an apply date.', 'warn'); return }
       if (!activeBranchId)      { showToast('Select a branch first.', 'warn'); return }
       try {
-        // Fetch FRESH rates from Firestore — avoids zero values from stale in-memory state
         const snap       = await db.collection('branches').doc(activeBranchId).get()
         const branchData = snap.data() || {}
         const freshRates = mode === 'walkin' ? (branchData.rates || {}) : (branchData.driveInRates || {})
@@ -813,7 +802,6 @@ export function Rates() {
             newRates[c][slot] = [...(freshRates[c]?.[slot] || Array(activeRTypes.length).fill(0))].map(v => Number(v) || 0)
           })
         })
-        // Overlay only AI-extracted values for the target category
         Object.entries(extracted[cat]).forEach(([slot, vals]) => {
           if (!newRates[cat][slot]) newRates[cat][slot] = Array(activeRTypes.length).fill(0)
           ;(vals || []).forEach((v, i) => { if (v !== null && v !== undefined) newRates[cat][slot][i] = Number(v) || 0 })
@@ -859,7 +847,6 @@ export function Rates() {
     <div className="page"><div className="card"><p className="hint">Loading rates…</p></div></div>
   )
 
-  // Strip internal duplicate suffix: "24HRS_2" → "24HRS", "24HRS" → "24HRS"
   function displaySlotName(key) {
     return key.replace(/_\d+$/, '')
   }
@@ -868,6 +855,25 @@ export function Rates() {
     const sch = rateSchedules?.[cat]?.[slot]
     if (!sch?.from) return null
     return `${sch.from}–${sch.to}`
+  }
+
+  // ── Build Excel preview summary ──────────────────────────
+  function buildExcelPreviewSummary(parsed) {
+    if (!parsed) return null
+    let totalChanged = 0
+    let catsWithData = []
+    CATEGORIES.forEach(cat => {
+      const slots = Object.keys(parsed[cat] || {})
+      if (slots.length) catsWithData.push(cat)
+      slots.forEach(slot => {
+        const newVals = parsed[cat][slot] || []
+        const curVals = activeRates[cat]?.[slot] || []
+        newVals.forEach((v, i) => {
+          if (v !== (Number(curVals[i]) || 0)) totalChanged++
+        })
+      })
+    })
+    return { catsWithData, totalChanged }
   }
 
   return (
@@ -911,7 +917,7 @@ export function Rates() {
             }}>📈 Bulk Adjust</button>
             <button className="btn btn-outline" onClick={() => fileRef.current?.click()}>📥 Import Excel</button>
             <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display:'none' }}
-              onChange={e => {
+              onChange={async e => {
                 const f = e.target.files[0]
                 if (!f) return
                 e.target.value = ''
@@ -920,7 +926,13 @@ export function Rates() {
                 setImportDate('')
                 setImportTime('06:00')
                 setImportLabel('')
+                setExcelPreview(null)
                 setImportModal(true)
+                // Parse immediately for preview
+                setExcelParsing(true)
+                const parsed = await parseFileForPreview(f)
+                setExcelPreview(parsed)
+                setExcelParsing(false)
               }} />
             <button className="btn btn-outline"
               onClick={() => { setAiPreview(null); setAiModal(true) }}
@@ -1044,21 +1056,10 @@ export function Rates() {
               const total = (activeTSlots[slotCat]||[]).length
               return (
               <tr key={slot}>
-                {/* Arrow buttons */}
                 <td style={{ padding:'2px 4px', textAlign:'center' }}>
                   <div style={{ display:'flex', flexDirection:'column', gap:1 }}>
-                    <button
-                      className="arr-btn"
-                      disabled={idx === 0}
-                      onClick={() => moveSlot(slotCat, idx, -1)}
-                      title="Move up"
-                    >▲</button>
-                    <button
-                      className="arr-btn"
-                      disabled={idx === total - 1}
-                      onClick={() => moveSlot(slotCat, idx, 1)}
-                      title="Move down"
-                    >▼</button>
+                    <button className="arr-btn" disabled={idx === 0} onClick={() => moveSlot(slotCat, idx, -1)} title="Move up">▲</button>
+                    <button className="arr-btn" disabled={idx === total - 1} onClick={() => moveSlot(slotCat, idx, 1)} title="Move down">▼</button>
                   </div>
                 </td>
                 <td>
@@ -1128,21 +1129,10 @@ export function Rates() {
           <tbody>
             {activeRTypes.map((rt, idx) => (
               <tr key={idx}>
-                {/* Arrow buttons */}
                 <td style={{ padding:'2px 4px', textAlign:'center' }}>
                   <div style={{ display:'flex', flexDirection:'column', gap:1 }}>
-                    <button
-                      className="arr-btn"
-                      disabled={idx === 0}
-                      onClick={() => moveRoomType(idx, -1)}
-                      title="Move left / up"
-                    >▲</button>
-                    <button
-                      className="arr-btn"
-                      disabled={idx === activeRTypes.length - 1}
-                      onClick={() => moveRoomType(idx, 1)}
-                      title="Move right / down"
-                    >▼</button>
+                    <button className="arr-btn" disabled={idx === 0} onClick={() => moveRoomType(idx, -1)} title="Move left / up">▲</button>
+                    <button className="arr-btn" disabled={idx === activeRTypes.length - 1} onClick={() => moveRoomType(idx, 1)} title="Move right / down">▼</button>
                   </div>
                 </td>
                 <td>
@@ -1224,7 +1214,6 @@ export function Rates() {
           Changes are previewed in the table. Click <strong>Save Rates</strong> to save to Firestore.
         </p>
 
-        {/* Category tabs */}
         <div className="form-group">
           <label>Category</label>
           <div style={{ display:'flex', gap:6 }}>
@@ -1239,7 +1228,6 @@ export function Rates() {
           </div>
         </div>
 
-        {/* Time slot checkboxes */}
         <div className="form-group">
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
             <label style={{ margin:0 }}>Time Slots</label>
@@ -1273,7 +1261,6 @@ export function Rates() {
           </div>
         </div>
 
-        {/* Room type checkboxes */}
         <div className="form-group">
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
             <label style={{ margin:0 }}>Room Types</label>
@@ -1296,7 +1283,6 @@ export function Rates() {
           </div>
         </div>
 
-        {/* Adjust mode + amount */}
         <div className="form-row">
           <div className="form-group">
             <label>Adjustment Type</label>
@@ -1314,7 +1300,6 @@ export function Rates() {
           </div>
         </div>
 
-        {/* Live preview */}
         {bulkSlots.length > 0 && bulkRooms.length > 0 && bulkAmount !== '' && !isNaN(parseFloat(bulkAmount)) && (
           <div style={{ padding:'10px 14px', background:'#e8f4fd', border:'1px solid #bee3f8', borderRadius:6, fontSize:'0.82rem', color:'#1a6fa0' }}>
             Preview: <strong>{bulkSlots.length}</strong> slot{bulkSlots.length > 1 ? 's' : ''} ×{' '}
@@ -1355,6 +1340,7 @@ export function Rates() {
           💡 For overnight windows (e.g. 20:00 → 06:00), set From to the later time. The system handles midnight wraparound automatically.
         </p>
       </Modal>
+
       {/* ── Copy Rates Modal ── */}
       <Modal show={copyModal} onClose={() => setCopyModal(false)}
         title="📋 Copy Rates Between Categories"
@@ -1473,17 +1459,123 @@ export function Rates() {
       </Modal>
 
       {/* ── Excel Import Modal ── */}
-      <Modal show={importModal} onClose={() => setImportModal(false)} title="📥 Import Excel Rates">
-        <div style={{ display:'flex', flexDirection:'column', gap:14, minWidth:320 }}>
+      <Modal show={importModal} onClose={() => { setImportModal(false); setExcelPreview(null) }}
+        title="📥 Import Excel Rates" wide>
+        <div style={{ display:'flex', flexDirection:'column', gap:14, minWidth:340 }}>
 
           {/* File name */}
           <div style={{
             padding:'10px 14px', background:'#f0f9ff',
             border:'1px solid #bae6fd', borderRadius:8,
             fontSize:'0.82rem', color:'#0369a1',
+            display:'flex', alignItems:'center', gap:8,
           }}>
             📄 <strong>{importFile?.name}</strong>
+            {excelParsing && (
+              <span style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:5, color:'#6b7280', fontSize:'0.76rem' }}>
+                <span style={{ width:12, height:12, border:'2px solid #d1d5db', borderTopColor:'#374151',
+                  borderRadius:'50%', animation:'spin 0.7s linear infinite', display:'inline-block' }} />
+                Reading…
+              </span>
+            )}
+            {excelPreview && !excelParsing && (
+              <span style={{ marginLeft:'auto', background:'#d1fae5', color:'#065f46', borderRadius:6,
+                padding:'2px 8px', fontSize:'0.73rem', fontWeight:700 }}>
+                ✅ Parsed
+              </span>
+            )}
+            {!excelPreview && !excelParsing && (
+              <span style={{ marginLeft:'auto', background:'#fee2e2', color:'#991b1b', borderRadius:6,
+                padding:'2px 8px', fontSize:'0.73rem', fontWeight:700 }}>
+                ⚠️ No matching rates found
+              </span>
+            )}
           </div>
+
+          {/* ── Excel Preview Table ── */}
+          {excelPreview && (() => {
+            const summary = buildExcelPreviewSummary(excelPreview)
+            return (
+              <div style={{ border:'1px solid #e0e0e0', borderRadius:8, overflow:'hidden' }}>
+                {/* Summary bar */}
+                <div style={{ display:'flex', gap:6, flexWrap:'wrap', padding:'8px 12px', background:'#f9fafb', borderBottom:'1px solid #e5e7eb' }}>
+                  {summary.catsWithData.map(cat => (
+                    <span key={cat} style={{ background: CAT_COLORS[cat] + '20', color: CAT_COLORS[cat],
+                      borderRadius:6, padding:'2px 8px', fontSize:'0.73rem', fontWeight:700,
+                      border:`1px solid ${CAT_COLORS[cat]}40` }}>
+                      {cat.toUpperCase()} — {Object.keys(excelPreview[cat]).length} slots
+                    </span>
+                  ))}
+                  <span style={{ background:'#d4edda', color:'#155724', borderRadius:6,
+                    padding:'2px 8px', fontSize:'0.73rem', fontWeight:700 }}>
+                    🔄 {summary.totalChanged} value{summary.totalChanged !== 1 ? 's' : ''} will change
+                  </span>
+                </div>
+
+                {/* Per-category tables */}
+                <div style={{ maxHeight:300, overflowY:'auto', overflowX:'auto' }}>
+                  {CATEGORIES.map(cat => {
+                    const slots = Object.keys(excelPreview[cat] || {})
+                    if (!slots.length) return null
+                    return (
+                      <div key={cat}>
+                        <div style={{ background: CAT_COLORS[cat], color:'#fff', padding:'4px 10px',
+                          fontWeight:800, fontSize:'0.72rem', letterSpacing:1 }}>
+                          {cat.toUpperCase()}
+                        </div>
+                        <table style={{ borderCollapse:'collapse', fontSize:'0.76rem', width:'100%' }}>
+                          <thead>
+                            <tr>
+                              <th style={{ padding:'4px 8px', background:'#f3f4f6', border:'1px solid #e5e7eb',
+                                textAlign:'left', whiteSpace:'nowrap', position:'sticky', top:0 }}>Slot</th>
+                              {activeRTypes.map(rt => (
+                                <th key={rt} style={{ padding:'4px 8px', background:'#f3f4f6', border:'1px solid #e5e7eb',
+                                  textAlign:'center', whiteSpace:'nowrap', position:'sticky', top:0 }}>{rt}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {slots.map(slot => (
+                              <tr key={slot}>
+                                <td style={{ padding:'3px 8px', border:'1px solid #e5e7eb',
+                                  fontWeight:700, whiteSpace:'nowrap', background:'#fafafa' }}>
+                                  {slot.replace(/_\d+$/, '')}
+                                </td>
+                                {(excelPreview[cat][slot] || []).map((v, i) => {
+                                  const cur     = Number(activeRates[cat]?.[slot]?.[i]) || 0
+                                  const newVal  = Number(v) || 0
+                                  const changed = newVal !== cur
+                                  const diff    = newVal - cur
+                                  return (
+                                    <td key={i} style={{
+                                      padding:'3px 8px', border:'1px solid #e5e7eb', textAlign:'center',
+                                      background: changed ? '#d4edda' : undefined,
+                                      color:      changed ? '#155724' : '#555',
+                                      fontWeight: changed ? 800 : 400,
+                                    }}>
+                                      ₱{newVal.toLocaleString()}
+                                      {changed && (
+                                        <div style={{ fontSize:'0.6rem', color: diff > 0 ? '#27ae60' : '#c0392b', fontWeight:800 }}>
+                                          {diff > 0 ? `+${diff.toLocaleString()}` : diff.toLocaleString()}
+                                        </div>
+                                      )}
+                                    </td>
+                                  )
+                                })}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )
+                  })}
+                </div>
+                <p style={{ margin:'6px 12px 8px', color:'#6b7280', fontSize:'0.73rem' }}>
+                  Green = will change from current rates. Review before confirming.
+                </p>
+              </div>
+            )
+          })()}
 
           {/* Apply mode */}
           <div>
@@ -1577,11 +1669,11 @@ export function Rates() {
 
           {/* Actions */}
           <div style={{ display:'flex', gap:10, justifyContent:'flex-end', marginTop:4 }}>
-            <button className="btn btn-ghost" onClick={() => setImportModal(false)}>Cancel</button>
+            <button className="btn btn-ghost" onClick={() => { setImportModal(false); setExcelPreview(null) }}>Cancel</button>
             <button
               className="btn btn-primary"
               onClick={confirmImport}
-              disabled={importApplyMode === 'schedule' && !importDate}
+              disabled={(importApplyMode === 'schedule' && !importDate) || (!excelPreview && !excelParsing)}
             >
               {importApplyMode === 'now' ? '📥 Import Now' : '🕐 Schedule Import'}
             </button>
@@ -1615,7 +1707,6 @@ export function Rates() {
           including custom ones like Weekly and Monthly. Works best with good lighting and a flat angle.
         </p>
 
-        {/* Category */}
         <div className="form-group">
           <label>Category to update</label>
           <div style={{ display:'flex', gap:6 }}>
@@ -1631,7 +1722,6 @@ export function Rates() {
           </div>
         </div>
 
-        {/* Target */}
         <div className="form-group">
           <label>Where to apply the rates</label>
           <div style={{ display:'flex', gap:6 }}>
@@ -1651,7 +1741,6 @@ export function Rates() {
           </small>
         </div>
 
-        {/* Scheduled fields */}
         {aiTarget==='scheduled' && (
           <>
             <div className="form-group">
@@ -1677,7 +1766,6 @@ export function Rates() {
           </>
         )}
 
-        {/* Drop zone */}
         {!aiPreview && groqStatus?.type !== 'loading' && (
           <label style={{ display:'block', border:'2px dashed #ddd', borderRadius:8,
             padding:'28px 16px', textAlign:'center', background:'#fafafa', cursor:'pointer', marginTop:8 }}>
@@ -1693,7 +1781,6 @@ export function Rates() {
           </label>
         )}
 
-        {/* Scanning indicator */}
         {groqStatus?.type === 'loading' && (
           <div style={{ textAlign:'center', padding:'24px 0', color:'#1e40af', fontSize:'0.85rem' }}>
             <div style={{ width:28, height:28, border:'3px solid #bfdbfe', borderTopColor:'#1e40af',
@@ -1702,7 +1789,6 @@ export function Rates() {
           </div>
         )}
 
-        {/* Preview table */}
         {aiPreview && (
           <div style={{ marginTop:8 }}>
             <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
@@ -1713,7 +1799,6 @@ export function Rates() {
                 onClick={() => setAiPreview(null)}>✕ Re-upload</button>
             </div>
 
-            {/* Summary badges */}
             <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:10 }}>
               <span style={{ background:'#d4edda', color:'#155724', borderRadius:6, padding:'2px 8px', fontSize:'0.74rem', fontWeight:700 }}>
                 ✅ {aiPreview.summary.matchedSlots} slots matched
@@ -1733,7 +1818,6 @@ export function Rates() {
               )}
             </div>
 
-            {/* Rate preview table */}
             <div style={{ overflowX:'auto', maxHeight:300, overflowY:'auto' }}>
               <table style={{ borderCollapse:'collapse', fontSize:'0.77rem', width:'100%' }}>
                 <thead>
