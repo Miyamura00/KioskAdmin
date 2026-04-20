@@ -95,37 +95,44 @@ function buildPrompt(category, systemSlots, systemRooms) {
   const allSlots = [...new Set(Object.values(systemSlots).flat())]
     .map(s => s.replace(/_\d+$/, ''))
 
-  return `Extract ${category.toUpperCase()} hotel/motel rates from this image.
+  const roomList  = systemRooms.map((r, i) => `  ${i + 1}. "${r}"`).join('\n')
+  const slotList  = allSlots.map((s, i) => `  ${i + 1}. "${s}"`).join('\n')
 
-This branch has these time slots configured: ${allSlots.join(', ')}
-This branch has these room types: ${systemRooms.join(', ')}
+  return `You are extracting ${category.toUpperCase()} hotel/motel room rates from an image of a rate table.
 
-CRITICAL ROOM TYPE RULES:
-1. Copy room type names EXACTLY as written in the image — do NOT shorten or abbreviate.
-   WRONG: image says "Executive Garage" → you write "Executive"
-   RIGHT: image says "Executive Garage" → you write "Executive Garage"
-   WRONG: image says "Concept Regency 2" → you write "Regency 2"
-   RIGHT: image says "Concept Regency 2" → you write "Concept Regency 2"
-2. Every column in the image is a separate room type — never skip or merge columns.
-3. Match to the list above only when the name is identical.
+SYSTEM ROOM TYPES — you MUST use these exact strings in your output whenever possible:
+${roomList}
 
-IMPORTANT: Use EXACTLY the slot names listed above when they match what you see.
-If the image has a slot not in the list (e.g. WEEKLY, MONTHLY), include it using the exact name from the image.
+SYSTEM TIME SLOTS — you MUST use these exact strings in your output whenever possible:
+${slotList}
 
-Return ONLY valid JSON — no markdown, no backticks, no explanation:
+STEP-BY-STEP INSTRUCTIONS:
+1. Count every column in the image. Each column is one room type.
+2. For each image column, find the CLOSEST match in the SYSTEM ROOM TYPES list above.
+   - Always prefer a system name over the raw image label, even if spelling differs.
+   - Example: image says "DELUXE" and system has "MC Deluxe" → output "MC Deluxe".
+   - Example: image says "EXECUTIVE" and system has "MC Executive" → output "MC Executive".
+   - Only use the raw image label if there is truly no reasonable system match.
+3. For each image row, find the CLOSEST match in the SYSTEM TIME SLOTS list above.
+   - Always prefer the system slot name.
+   - Only use the raw image label if there is truly no reasonable system match.
+4. Extract the numeric rate for every (row, column) cell visible in the image.
+
+RESPOND WITH ONLY THIS JSON — no prose, no explanation, no markdown fences:
 {
-  "roomTypes": ["Econo", "Premium", "Executive", "Executive Garage"],
+  "roomTypes": ["one entry per image column, using system names where possible"],
   "slots": {
-    "24HRS": [1160, 1840, 1890, 2100],
-    "12HRS": [1000, 1190, 1070, 1300]
+    "SLOT_NAME": [col1_value, col2_value, ...],
+    "SLOT_NAME": [col1_value, col2_value, ...]
   }
 }
 
-Rules:
-- roomTypes defines the column ORDER — each slot array must match this order exactly
-- Use null for empty, dash, or missing cells
-- Numbers only — no peso signs or commas
-- Include ALL rows visible in the image`
+STRICT RULES:
+- roomTypes array length MUST equal the number of image columns
+- Every slot array length MUST equal roomTypes length
+- Use null for any empty, dash, or unreadable cell
+- Numbers only — no peso signs, commas, or units
+- Include ALL rows visible in the image — do NOT omit any row`
 }
 
 // ── Main hook ────────────────────────────────────────────────────────────────
@@ -152,6 +159,7 @@ export function useGroqRatesExtract() {
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${GROQ_KEY}` },
         body: JSON.stringify({
           model: GROQ_MODEL, temperature: 0, max_tokens: 2000,
+          response_format: { type: 'json_object' },
           messages: [{
             role: 'user',
             content: [
