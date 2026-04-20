@@ -107,7 +107,7 @@ html, body, #root {
 }
 
 .rate-table th {
-  background-color: #f3f300;
+  background-color: #f3f32a;
   color: #1a1a1a;
   border: 1px solid whitesmoke;
   /* padding scales with viewport — keeps text from touching edges */
@@ -133,7 +133,7 @@ html, body, #root {
 }
 
 .rate-table td.cell-label {
-  background-color: #f3f300;
+  background-color: #f3f32a;
   color: #1a1a1a;
   font-weight: 900;
   text-align: center;
