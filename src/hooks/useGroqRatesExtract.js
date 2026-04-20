@@ -61,32 +61,26 @@ function roomSimilarity(a, b) {
 }
 
 // ── Global room assignment ───────────────────────────────────────────────────
-// Resolves ALL extracted rooms → system rooms together so no two extracted
-// rooms steal the same system room. Uses a greedy best-score approach:
-// highest-confidence pairs are locked in first.
 function buildRoomIdxMap(extractedRooms, systemRooms) {
   const normExtracted = extractedRooms.map(normRoom)
   const normSystem    = systemRooms.map(normRoom)
 
-  // Build full score matrix
   const scores = normExtracted.map(ne =>
     normSystem.map(ns => roomSimilarity(ne, ns))
   )
 
-  // Collect all (extractedIdx, systemIdx, score) pairs with score > 0
   const pairs = []
   scores.forEach((row, ei) =>
     row.forEach((score, si) => { if (score > 0) pairs.push({ ei, si, score }) })
   )
 
-  // Sort by score descending — highest confidence first
   pairs.sort((a, b) => b.score - a.score)
 
-  const roomIdxMap  = {}   // extractedIdx → systemIdx
+  const roomIdxMap  = {}
   const usedSystem  = new Set()
   const usedExtract = new Set()
 
-  for (const { ei, si, score } of pairs) {
+  for (const { ei, si } of pairs) {
     if (usedExtract.has(ei) || usedSystem.has(si)) continue
     roomIdxMap[ei] = si
     usedSystem.add(si)
@@ -173,29 +167,55 @@ export function useGroqRatesExtract() {
         throw new Error(e.error?.message || `Groq error ${resp.status}`)
       }
 
-      const data   = await resp.json()
-      const text   = data.choices?.[0]?.message?.content || ''
+      const data = await resp.json()
+      const text = data.choices?.[0]?.message?.content || ''
 
-      // Debug — check browser console to see exactly what Groq returned
-      // console.log('[useGroqRatesExtract] raw Groq response:', text)
+      // Always log so you can debug what Groq actually returned
+      console.log('[useGroqRatesExtract] raw Groq response:', text)
 
-      const parsed = JSON.parse(text.replace(/```json|```/g, '').trim())
+      // ── Robust JSON extraction ───────────────────────────────────────────
+      // Groq sometimes wraps output in markdown fences or adds prose before/after.
+      // Match the outermost { ... } block instead of parsing the whole string.
+      const jsonMatch = text.match(/\{[\s\S]*\}/)
+      if (!jsonMatch) {
+        throw new Error(
+          'AI could not read the image as a rate table. ' +
+          'Try a clearer, better-lit photo with no blur or tilt.'
+        )
+      }
+      let parsed
+      try {
+        parsed = JSON.parse(jsonMatch[0])
+      } catch {
+        throw new Error(
+          'AI returned malformed JSON. ' +
+          'Try a clearer photo or crop tighter around the table.'
+        )
+      }
 
-      // console.log('[useGroqRatesExtract] parsed roomTypes:', parsed.roomTypes)
-      // console.log('[useGroqRatesExtract] systemRooms:', systemRooms)
+      console.log('[useGroqRatesExtract] parsed roomTypes:', parsed.roomTypes)
+      console.log('[useGroqRatesExtract] systemRooms:', systemRooms)
 
-      const extractedRooms = parsed.roomTypes || []
-      const extractedSlots = parsed.slots     || {}
-      const catSlots       = systemSlots[category] || []
+      const extractedRooms = Array.isArray(parsed.roomTypes) ? parsed.roomTypes : []
 
-      // ── Resolve ALL room mappings globally (no greedy stealing) ──
+      // Guard: slots must be a plain object — null / array / missing → treat as empty
+      const rawSlots =
+        parsed.slots &&
+        typeof parsed.slots === 'object' &&
+        !Array.isArray(parsed.slots)
+          ? parsed.slots
+          : {}
+
+      const catSlots = systemSlots[category] || []
+
+      // ── Resolve ALL room mappings globally ──────────────────────────────
       const roomIdxMap = buildRoomIdxMap(extractedRooms, systemRooms)
 
-      // console.log('[useGroqRatesExtract] roomIdxMap:', 
-      //   Object.entries(roomIdxMap).map(([ei, si]) => 
-      //     `"${extractedRooms[ei]}" → "${systemRooms[si]}"`
-      //   )
-      // )
+      console.log('[useGroqRatesExtract] roomIdxMap:',
+        Object.entries(roomIdxMap).map(([ei, si]) =>
+          `"${extractedRooms[ei]}" → "${systemRooms[si]}"`
+        )
+      )
 
       // Map extracted slot names → system slot keys, build rate arrays
       const catRates      = {}
@@ -203,9 +223,16 @@ export function useGroqRatesExtract() {
       const matchedRooms  = new Set()
       const unmappedSlots = []
 
-      for (const [extractedSlot, values] of Object.entries(extractedSlots)) {
+      for (const [extractedSlot, values] of Object.entries(rawSlots)) {
+        // FIX: Groq can return null or a non-array for a slot's values — skip safely
+        if (!Array.isArray(values)) {
+          console.warn('[useGroqRatesExtract] skipping non-array values for slot:', extractedSlot, values)
+          continue
+        }
+
         const slotKey = matchSlotKey(extractedSlot, catSlots)
         if (!slotKey) { unmappedSlots.push(extractedSlot); continue }
+
         const arr = Array(systemRooms.length).fill(null)
         values.forEach((val, ei) => {
           const si = roomIdxMap[ei]
