@@ -17,9 +17,9 @@ const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Satur
 const CATEGORIES = ['weekday','weekend','holiday']
 const CAT_COLORS = { weekday:'#444', weekend:'#1a5276', holiday:'#700909' }
 const DEFAULT_TIME_SLOTS = {
-  weekday: ['24HRS','12HRS','10HRS','10HRS ONP','6HRS','3HRS'],
-  weekend: ['24HRS','12HRS','10HRS','6HRS','3HRS'],
-  holiday: ['24HRS','12HRS','10HRS','6HRS','3HRS'],
+  weekday: ['2HRS','3HRS','6HRS','10HRS','10HRS ONP','12HRS','24HRS'],
+  weekend: ['2HRS','3HRS','6HRS','10HRS','12HRS','24HRS'],
+  holiday: ['2HRS','3HRS','6HRS','10HRS','12HRS','24HRS'],
 }
 const DEFAULT_ROOM_TYPES    = ['Econo','Premium','Deluxe','Regency 2']
 const DEFAULT_DRIVEIN_TYPES  = ['Standard','Deluxe']
