@@ -787,7 +787,7 @@ export function Rates() {
         const catRates = { ...(updated[cat] || {}) }
         Object.entries(extracted[cat]).forEach(([slot, vals]) => {
           const existing = [...(catRates[slot] || Array(activeRTypes.length).fill(0))]
-          vals.forEach((v, i) => { if (v !== null) existing[i] = v })
+          ;(vals || []).forEach((v, i) => { if (v !== null) existing[i] = v })
           catRates[slot] = existing
         })
         updated[cat] = catRates
@@ -816,7 +816,7 @@ export function Rates() {
         // Overlay only AI-extracted values for the target category
         Object.entries(extracted[cat]).forEach(([slot, vals]) => {
           if (!newRates[cat][slot]) newRates[cat][slot] = Array(activeRTypes.length).fill(0)
-          vals.forEach((v, i) => { if (v !== null && v !== undefined) newRates[cat][slot][i] = Number(v) || 0 })
+          ;(vals || []).forEach((v, i) => { if (v !== null && v !== undefined) newRates[cat][slot][i] = Number(v) || 0 })
         })
 
         const applyAt = new Date(aiSchedDate + 'T' + aiSchedTime).toISOString()
