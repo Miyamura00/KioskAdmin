@@ -76,6 +76,7 @@ export function Rates() {
   // shared settings
   const [rateSchedules, setRateSchedules] = useState({})
   const [disabledSlots, setDisabledSlots]   = useState({})
+  const [hideCatLabel, setHideCatLabel]     = useState(false)
   const [openCats, setOpenCats]           = useState({ weekday:true, weekend:false, holiday:false })
   const [loading, setLoading]             = useState(false)
   const [saving, setSaving]               = useState(false)
@@ -130,7 +131,7 @@ export function Rates() {
   function resetState() {
     setRates({}); setTimeSlots(DEFAULT_TIME_SLOTS); setRoomTypes(DEFAULT_ROOM_TYPES)
     setDiRates({}); setDiTimeSlots(DEFAULT_TIME_SLOTS); setDiRoomTypes(DEFAULT_DRIVEIN_TYPES)
-    setRateSchedules({}); setDisabledSlots({}); setHasDriveIn(false); setMode('walkin')
+    setRateSchedules({}); setDisabledSlots({}); setHideCatLabel(false); setHasDriveIn(false); setMode('walkin')
     setWkndStartDay(5); setWkndStartHour(6); setWkndEndDay(0); setWkndEndHour(18)
   }
 
@@ -149,6 +150,7 @@ export function Rates() {
       setDiRoomTypes(s.driveInRoomTypes || DEFAULT_DRIVEIN_TYPES)
       setRateSchedules(s.rateSchedules || {})
       setDisabledSlots(s.disabledSlots || {})
+      setHideCatLabel(s.hideCatLabel === true)
       setHasDriveIn(s.hasDriveIn === true)
       setWkndStartDay(s.weekendStartDay ?? 5)
       setWkndStartHour(s.weekendStartHour ?? 6)
@@ -417,10 +419,13 @@ export function Rates() {
 
   // ── Toggle Slot Disabled ────────────────────────────────
   async function toggleSlotDisabled(cat, slot) {
-    const isNowDisabled = !disabledSlots?.[cat]?.[slot]
+    const isNowDisabled = !disabledSlots?.[mode]?.[cat]?.[slot]
     const updated = {
       ...disabledSlots,
-      [cat]: { ...(disabledSlots[cat] || {}), [slot]: isNowDisabled }
+      [mode]: {
+        ...(disabledSlots[mode] || {}),
+        [cat]: { ...(disabledSlots[mode]?.[cat] || {}), [slot]: isNowDisabled }
+      }
     }
     try {
       await db.collection('branches').doc(activeBranchId).update({ 'settings.disabledSlots': updated })
@@ -431,6 +436,17 @@ export function Rates() {
         activeBranchId, branchName
       )
       showToast(`"${slot}" ${isNowDisabled ? 'disabled — hidden from kiosk.' : 'enabled.'}`, isNowDisabled ? 'warn' : 'success')
+    } catch (err) { showToast('Error: ' + err.message, 'error') }
+  }
+
+  // ── Toggle Kiosk Category Label ──────────────────────────
+  async function toggleHideCatLabel() {
+    const next = !hideCatLabel
+    try {
+      await db.collection('branches').doc(activeBranchId).update({ 'settings.hideCatLabel': next })
+      setHideCatLabel(next)
+      await logAction('UPDATE_SETTINGS', `${next ? 'Hidden' : 'Shown'} kiosk category label`, activeBranchId, branchName)
+      showToast(`Kiosk category label ${next ? 'hidden.' : 'visible.'}`, next ? 'warn' : 'success')
     } catch (err) { showToast('Error: ' + err.message, 'error') }
   }
 
@@ -907,6 +923,13 @@ export function Rates() {
               </>
             )}
             <button className="btn btn-outline" onClick={() => setWeekendSchedModal(true)}>🗓 Weekend Schedule</button>
+            <button
+              className={`btn ${hideCatLabel ? 'btn-primary' : 'btn-outline'}`}
+              onClick={toggleHideCatLabel}
+              title={hideCatLabel ? 'Kiosk category label is hidden — click to show' : 'Click to hide WEEKDAY/WEEKEND/HOLIDAY label on kiosk'}
+            >
+              {hideCatLabel ? '🏷 Label: Hidden' : '🏷 Label: Visible'}
+            </button>
             <button className="btn btn-outline" onClick={() => {
               setBulkCat('weekday')
               setBulkSlots([])
@@ -987,7 +1010,7 @@ export function Rates() {
                   {(activeTSlots[cat]||[]).map(slot => {
                     const vals       = activeRates[cat]?.[slot] || Array(activeRTypes.length).fill(0)
                     const schLbl     = scheduleLabel(cat, slot)
-                    const isDisabled = disabledSlots?.[cat]?.[slot] === true
+                    const isDisabled = disabledSlots?.[mode]?.[cat]?.[slot] === true
                     return (
                       <tr key={slot} style={isDisabled ? { opacity:0.45, background:'#f8f8f8' } : {}}>
                         <td style={{ fontWeight:700, background: isDisabled ? '#f0f0f0' : '#f9f9f9', paddingLeft:12 }}>
@@ -1053,9 +1076,10 @@ export function Rates() {
           <thead><tr><th style={{width:32}}></th><th>Slot Name</th><th>Schedule</th><th>Actions</th></tr></thead>
           <tbody>
             {(activeTSlots[slotCat]||[]).map((slot, idx) => {
-              const total = (activeTSlots[slotCat]||[]).length
+              const total      = (activeTSlots[slotCat]||[]).length
+              const isDisabled = disabledSlots?.[mode]?.[slotCat]?.[slot] === true
               return (
-              <tr key={slot}>
+              <tr key={slot} style={isDisabled ? { background:'#fff4f0', opacity:0.85 } : {}}>
                 <td style={{ padding:'2px 4px', textAlign:'center' }}>
                   <div style={{ display:'flex', flexDirection:'column', gap:1 }}>
                     <button className="arr-btn" disabled={idx === 0} onClick={() => moveSlot(slotCat, idx, -1)} title="Move up">▲</button>
@@ -1070,10 +1094,17 @@ export function Rates() {
                       style={{ width:160 }}
                       placeholder="Display name" />
                   ) : (
-                    <span>
-                      <strong>{displaySlotName(slot)}</strong>
+                    <span style={{ display:'flex', alignItems:'center', gap:6 }}>
+                      <strong style={{ textDecoration: isDisabled ? 'line-through' : 'none', color: isDisabled ? '#aaa' : undefined }}>
+                        {displaySlotName(slot)}
+                      </strong>
                       {slot !== displaySlotName(slot) && (
-                        <span style={{ marginLeft:6, fontSize:'0.7rem', color:'#aaa', fontStyle:'italic' }}>copy #{slot.split('_').pop()}</span>
+                        <span style={{ fontSize:'0.7rem', color:'#aaa', fontStyle:'italic' }}>copy #{slot.split('_').pop()}</span>
+                      )}
+                      {isDisabled && (
+                        <span style={{ fontSize:'0.68rem', fontWeight:800, background:'#e74c3c', color:'#fff', borderRadius:5, padding:'1px 6px' }}>
+                          HIDDEN
+                        </span>
                       )}
                     </span>
                   )}
@@ -1095,13 +1126,17 @@ export function Rates() {
                         <button className="btn btn-blue" style={{ padding:'4px 9px', fontSize:'0.76rem' }}
                           onClick={() => openSchedModal(slotCat, slot)}>🕐 Schedule</button>
                         <button
-                          className={disabledSlots?.[slotCat]?.[slot] ? 'btn btn-green' : 'btn btn-outline'}
-                          style={{ padding:'4px 9px', fontSize:'0.76rem',
-                            ...(disabledSlots?.[slotCat]?.[slot] ? {} : { color:'#e67e22', borderColor:'#e67e22' }) }}
+                          style={{
+                            padding:'4px 9px', fontSize:'0.76rem', fontWeight:700,
+                            borderRadius:6, border:'2px solid', cursor:'pointer',
+                            background: isDisabled ? '#27ae60' : '#e74c3c',
+                            borderColor: isDisabled ? '#27ae60' : '#e74c3c',
+                            color: '#fff',
+                          }}
                           onClick={() => toggleSlotDisabled(slotCat, slot)}
-                          title={disabledSlots?.[slotCat]?.[slot] ? 'Enable — show on kiosk' : 'Disable — hide from kiosk'}
+                          title={isDisabled ? 'Click to show on kiosk' : 'Click to hide from kiosk'}
                         >
-                          {disabledSlots?.[slotCat]?.[slot] ? '✔ Enable' : '⊘ Disable'}
+                          {isDisabled ? '✔ Enable' : '⊘ Disable'}
                         </button>
                         <button className="btn btn-danger" style={{ padding:'4px 9px', fontSize:'0.76rem' }}
                           onClick={() => deleteSlot(slotCat, slot)}>Delete</button>

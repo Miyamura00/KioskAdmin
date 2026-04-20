@@ -142,7 +142,10 @@ export function Kiosk() {
   // displayMode = what is currently SHOWN on screen
   const displayMode = (!hasDriveIn || mode === 'walkin') ? 'walkin' : 'drivein'
   const modeTitle   = displayMode === 'walkin' ? 'WALK-IN ROOM RATES' : 'DRIVE-IN ROOM RATES'
-  const catLabel    = { weekday:'WEEKDAY RATE', weekend:'WEEKEND RATE', holiday:'HOLIDAY RATE' }
+  const hideCatLabel = settings.hideCatLabel === true
+  const catLabel    = hideCatLabel
+    ? { weekday:'', weekend:'', holiday:'' }
+    : { weekday:'WEEKDAY RATE', weekend:'WEEKEND RATE', holiday:'HOLIDAY RATE' }
 
   const dateStr = now.toLocaleDateString('en-US', { weekday:'long', year:'numeric', month:'long', day:'numeric' })
   const timeStr = now.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true })
@@ -184,7 +187,7 @@ export function Kiosk() {
                 slots={displayMode === 'walkin' ? wiTimeSlots : diTimeSlots}
                 roomTypes={displayMode === 'walkin' ? wiRoomTypes : diRoomTypes}
                 now={now} schedules={schedules} cat={cat}
-                disabledSlots={settings.disabledSlots || {}}
+              disabledSlots={settings.disabledSlots?.[displayMode] ?? settings.disabledSlots ?? {}}
               />
             ) : (
               <div style={{ color:'#f3d000', padding:40, textAlign:'center', fontWeight:700 }}>Loading…</div>
