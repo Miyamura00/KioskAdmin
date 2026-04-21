@@ -1,6 +1,6 @@
 // src/pages/admin/ScheduledRates.jsx
 // Features: multi-adjustment per schedule, edit pending, delete past, auto-rollback scheduling
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { db }       from '../../firebase/config'
 import firebase     from '../../firebase/config'
 import { useAuth }  from '../../context/AuthContext'
@@ -146,52 +146,33 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
   const [aiEditCat,    setAiEditCat]    = useState('weekday')
   const [savingAiEdit, setSavingAiEdit] = useState(false)
 
-  // ── Realtime listener + precise per-entry timers ───────────
+  // ── UI-only realtime listener ────────────────────────────────────────────
+  // Auto-apply logic lives in useScheduledRatesWatcher (mounted at layout
+  // level). This listener is purely for keeping the displayed list current.
+  //
+  // IMPORTANT: We deliberately avoid .where() + .orderBy() on different
+  // fields — that requires a Firestore composite index. Without it the query
+  // silently fails and deletes/updates never reach the UI (the "stuck
+  // APPLYING" bug). We fetch all docs ordered by applyAt and filter in
+  // memory instead — no composite index needed.
   useEffect(() => {
     if (!branchId) { setScheduled([]); return }
-
-    const timers = new Map()
-
-    function scheduleTimer(entry) {
-      if (timers.has(entry.id)) return
-      const msUntil = new Date(entry.applyAt) - Date.now()
-      if (msUntil <= 0) {
-        applyEntry(entry, true)
-        return
-      }
-      const t = setTimeout(() => {
-        applyEntry(entry, true)
-        timers.delete(entry.id)
-      }, msUntil + 100)
-      timers.set(entry.id, t)
-    }
 
     const unsub = db
       .collection('branches').doc(branchId)
       .collection('scheduledRates')
       .orderBy('applyAt', 'asc')
-      .onSnapshot(snap => {
-        const entries = snap.docs
-          .map(d => ({ id: d.id, ...d.data() }))
-          .filter(e => e.mode === mode && e.status === 'pending')
+      .onSnapshot(
+        snap => {
+          const entries = snap.docs
+            .map(d => ({ id: d.id, ...d.data() }))
+            .filter(e => e.mode === mode && e.status === 'pending')
+          setScheduled(entries)
+        },
+        err => console.error('scheduledRates snapshot:', err)
+      )
 
-        setScheduled(entries)
-
-        const liveIds = new Set(entries.map(e => e.id))
-        timers.forEach((t, id) => {
-          if (!liveIds.has(id)) { clearTimeout(t); timers.delete(id) }
-        })
-
-        entries.forEach(scheduleTimer)
-
-      }, err => console.error('scheduledRates snapshot:', err))
-
-    return () => {
-      unsub()
-      timers.forEach(t => clearTimeout(t))
-      timers.clear()
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => unsub()
   }, [branchId, mode])
 
   async function fetchScheduled() {
@@ -205,12 +186,14 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
     } catch (err) { console.error(err) }
   }
 
-  const applyingSet = new Set()
+  // useRef so the Set persists across re-renders (a plain `const` inside
+  // the component body is reset on every render, making the guard useless).
+  const applyingSetRef = useRef(new Set())
 
   async function applyEntry(entry, silent = false) {
-    if (applyingSet.has(entry.id)) return
+    if (applyingSetRef.current.has(entry.id)) return
     if (!silent && !confirm(`Apply "${entry.label}" now?\nThis updates live rates immediately.`)) return
-    applyingSet.add(entry.id)
+    applyingSetRef.current.add(entry.id)
     setApplying(entry.id)
     try {
       const ref      = db.collection('branches').doc(branchId)
@@ -275,7 +258,7 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
       console.error('applyEntry error:', err)
       if (!silent) showToast('Error: ' + err.message, 'error')
     } finally {
-      applyingSet.delete(entry.id)
+      applyingSetRef.current.delete(entry.id)
       setApplying(null)
     }
   }
@@ -450,11 +433,18 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
                     const isExcelImport = entry.source === 'excel-import' || (entry.isAbsoluteImport && !isAI)
                     // Both AI and Excel imported entries use the view/edit table modal
                     const useTableEdit  = isAI || isExcelImport
+                    // isRollback entries have absolute newRates just like AI/Excel
+                    // so they use the same table editor, not the adjustment editor
+                    const useTableEdit2 = useTableEdit || entry.isRollback
+                    const isApplyingThis = applying === entry.id
                     return (
-                      <tr key={entry.id} style={entry.isRollback ? { background:'#fffbe6' } : due ? { background:'#fff8e1' } : {}}>
+                      <tr key={entry.id} style={entry.isRollback ? { background:'#fffbe6' } : due ? { background:'#fff8f0' } : {}}>
                         <td>
                           <strong>{entry.label}</strong>
-                          {entry.isRollback && (
+                          {entry.isRollback && entry.source === 'rate-history-rollback' && (
+                            <span style={{ marginLeft:6, background:'#fff3cd', color:'#856404', borderRadius:8, padding:'1px 6px', fontSize:'0.68rem', fontWeight:800 }}>↩ Rollback</span>
+                          )}
+                          {entry.isRollback && entry.source !== 'rate-history-rollback' && (
                             <span style={{ marginLeft:6, color:'#e67e22', fontSize:'0.72rem' }}>↩ Auto-Rollback</span>
                           )}
                           {isAI && (
@@ -466,15 +456,19 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
                         </td>
                         <td style={{ fontSize:'0.82rem', whiteSpace:'nowrap' }}>
                           {formatDt(entry.applyAt)}
-                          {due
+                          {isApplyingThis
+                            // Only show APPLYING when THIS component is actively applying it
                             ? <span style={{ marginLeft:6, background:'#ffc107', color:'#5a3a00', borderRadius:8, padding:'1px 6px', fontSize:'0.68rem', fontWeight:800 }}>⏳ APPLYING…</span>
-                            : <span style={{ marginLeft:6, background:'#e8f5e9', color:'#2e7d32', borderRadius:8, padding:'1px 6px', fontSize:'0.68rem', fontWeight:700 }}>⚡ Auto</span>
+                            : due
+                              // Past-due but not being applied locally — watcher may have missed it
+                              ? <span style={{ marginLeft:6, background:'#f8d7da', color:'#721c24', borderRadius:8, padding:'1px 6px', fontSize:'0.68rem', fontWeight:800 }}>⚠️ Overdue</span>
+                              : <span style={{ marginLeft:6, background:'#e8f5e9', color:'#2e7d32', borderRadius:8, padding:'1px 6px', fontSize:'0.68rem', fontWeight:700 }}>⚡ Auto</span>
                           }
                         </td>
                         <td style={{ fontSize:'0.79rem' }}>
                           {adjs.length === 0
                             ? <span style={{ color:'#888', fontStyle:'italic' }}>
-                                {isAI ? 'Full rate set (AI import)' : isExcelImport ? 'Full rate set (Excel import)' : 'No adjustments'}
+                                {isAI ? 'Full rate set (AI import)' : isExcelImport ? 'Full rate set (Excel import)' : entry.isRollback ? 'Full rate set (Rollback)' : 'No adjustments'}
                               </span>
                             : adjs.map((a,i) => (
                               <div key={i}>
@@ -490,15 +484,16 @@ export function ScheduledRates({ branchId, branchName, mode, activeRTypes, activ
                         </td>
                         <td>
                           <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
+                            {/* Show Apply Now for overdue entries so user can force-apply if watcher missed it */}
                             {due && (
                               <button className="btn btn-green" style={{ fontSize:'0.75rem', padding:'4px 9px' }}
-                                disabled={applying===entry.id} onClick={() => applyEntry(entry)}>
-                                {applying===entry.id ? '⏳…' : '▶ Apply Now'}
+                                disabled={isApplyingThis} onClick={() => applyEntry(entry)}>
+                                {isApplyingThis ? '⏳…' : '▶ Apply Now'}
                               </button>
                             )}
                             <button className="btn btn-outline" style={{ fontSize:'0.75rem', padding:'4px 9px' }}
-                              onClick={() => useTableEdit ? openAiEdit(entry) : openEdit(entry)}>
-                              {useTableEdit ? '👁 View / Edit' : '✏️ Edit'}
+                              onClick={() => useTableEdit2 ? openAiEdit(entry) : openEdit(entry)}>
+                              {useTableEdit2 ? '👁 View / Edit' : '✏️ Edit'}
                             </button>
                             <button className="btn btn-danger" style={{ fontSize:'0.75rem', padding:'4px 9px' }}
                               disabled={cancelling===entry.id} onClick={() => cancelEntry(entry)}>

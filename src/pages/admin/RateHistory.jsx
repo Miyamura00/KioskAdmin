@@ -97,6 +97,7 @@ export function RateHistory({ branchId, branchName, mode, activeRTypes, activeTS
         label:        `↩ Scheduled Rollback: ${formatTs(schedRbEntry.savedAt)}`,
         applyAt, mode, status: 'pending', adjustments: [],
         newRates:     schedRbEntry.rates, isRollback: true, rollbackFor: schedRbEntry.id,
+        source:       'rate-history-rollback',   // lets ScheduledRates show correct badge & table editor
         createdAt:    firebase.firestore.FieldValue.serverTimestamp(),
         createdBy:    currentUser.email, createdByName: userProfile?.displayName || currentUser.email,
       })
