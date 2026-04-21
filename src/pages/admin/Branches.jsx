@@ -14,7 +14,7 @@ const DEFAULT_TIME_SLOTS = {
   weekend: ['2HRS','3HRS','6HRS','10HRS','12HRS','24HRS'],
   holiday: ['2HRS','3HRS','6HRS','10HRS','12HRS','24HRS'],
 }
-const DEFAULT_ROOM_TYPES   = ['Econo','Premium','Deluxe','Regency 2']
+const DEFAULT_ROOM_TYPES    = ['Econo','Premium','Deluxe','Regency 2']
 const DEFAULT_DRIVEIN_TYPES = ['Standard','Deluxe']
 
 function makeBlankRates(roomTypes, timeSlots) {
@@ -24,6 +24,19 @@ function makeBlankRates(roomTypes, timeSlots) {
     timeSlots[cat].forEach(s => { r[cat][s] = Array(roomTypes.length).fill(0) })
   })
   return r
+}
+
+/** Validate a single IPv4 address */
+function isValidIPv4(ip) {
+  return /^(\d{1,3}\.){3}\d{1,3}$/.test(ip) &&
+    ip.split('.').every(n => parseInt(n) >= 0 && parseInt(n) <= 255)
+}
+
+/** Fetch the caller's public IP via ipify */
+async function fetchMyPublicIP() {
+  const res = await fetch('https://api.ipify.org?format=json')
+  const { ip } = await res.json()
+  return ip
 }
 
 export function Branches() {
@@ -37,7 +50,7 @@ export function Branches() {
   const [modal, setModal]       = useState(false)
   const [editId, setEditId]     = useState(null)
 
-  // form
+  // form fields
   const [branchName, setBranchName] = useState('')
   const [branchLoc, setBranchLoc]   = useState('')
   const [branchId, setBranchId]     = useState('')
@@ -45,6 +58,12 @@ export function Branches() {
   const [hasDriveIn, setHasDriveIn] = useState(false)
   const [saving, setSaving]         = useState(false)
   const [copied, setCopied]         = useState(null)
+
+  // IP whitelist state
+  const [allowedIPs, setAllowedIPs]   = useState([])
+  const [ipInput, setIpInput]         = useState('')
+  const [ipError, setIpError]         = useState('')
+  const [fetchingIP, setFetchingIP]   = useState(false)
 
   useEffect(() => { loadBranches() }, [])
 
@@ -60,6 +79,7 @@ export function Branches() {
   function openAdd() {
     setEditId(null)
     setBranchName(''); setBranchLoc(''); setBranchId(''); setCopyFrom(''); setHasDriveIn(false)
+    setAllowedIPs([]); setIpInput(''); setIpError('')
     setModal(true)
   }
 
@@ -69,6 +89,8 @@ export function Branches() {
     setBranchLoc(b.location || '')
     setBranchId(b.id)
     setHasDriveIn(b.settings?.hasDriveIn === true)
+    setAllowedIPs(b.settings?.allowedIPs || [])
+    setIpInput(''); setIpError('')
     setModal(true)
   }
 
@@ -78,6 +100,36 @@ export function Branches() {
       setBranchId(val.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,''))
     }
   }
+
+  // ── IP helpers ────────────────────────────────────────────────────────────
+
+  function addIP() {
+    const ip = ipInput.trim()
+    if (!ip) return
+    if (!isValidIPv4(ip)) { setIpError('Enter a valid IPv4 address (e.g. 192.168.1.10)'); return }
+    if (allowedIPs.includes(ip)) { setIpError('This IP is already in the list.'); return }
+    setAllowedIPs(prev => [...prev, ip])
+    setIpInput(''); setIpError('')
+  }
+
+  function removeIP(ip) {
+    setAllowedIPs(prev => prev.filter(i => i !== ip))
+  }
+
+  async function useMyIP() {
+    setFetchingIP(true)
+    setIpError('')
+    try {
+      const ip = await fetchMyPublicIP()
+      setIpInput(ip)
+    } catch {
+      setIpError('Could not detect your IP. Please enter it manually.')
+    } finally {
+      setFetchingIP(false)
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
 
   async function saveBranch() {
     if (!branchName.trim()) { showToast('Branch name is required.', 'warn'); return }
@@ -92,16 +144,21 @@ export function Branches() {
           name: branchName.trim(),
           location: branchLoc.trim(),
           'settings.hasDriveIn': hasDriveIn,
+          'settings.allowedIPs': allowedIPs,
         })
-        await logAction('UPDATE_BRANCH', `Updated branch "${branchName}" (hasDriveIn: ${hasDriveIn})`, editId, branchName)
+        await logAction(
+          'UPDATE_BRANCH',
+          `Updated branch "${branchName}" (hasDriveIn: ${hasDriveIn}, allowedIPs: ${allowedIPs.length})`,
+          editId, branchName
+        )
         showToast('Branch updated!')
       } else {
         const existing = await db.collection('branches').doc(branchId).get()
         if (existing.exists) { showToast('Branch ID already in use.', 'error'); return }
 
-        let rates      = makeBlankRates(DEFAULT_ROOM_TYPES, DEFAULT_TIME_SLOTS)
+        let rates        = makeBlankRates(DEFAULT_ROOM_TYPES, DEFAULT_TIME_SLOTS)
         let driveInRates = makeBlankRates(DEFAULT_DRIVEIN_TYPES, DEFAULT_TIME_SLOTS)
-        let settings   = {
+        let settings     = {
           weekendStartDay: 5, weekendStartHour: 6,
           weekendEndDay: 0,   weekendEndHour: 18,
           holidays: [],
@@ -111,15 +168,16 @@ export function Branches() {
           driveInRoomTypes:  hasDriveIn ? DEFAULT_DRIVEIN_TYPES : [],
           driveInTimeSlots:  hasDriveIn ? DEFAULT_TIME_SLOTS : {},
           rateSchedules: {},
+          allowedIPs,
         }
 
         if (copyFrom) {
           const src = await db.collection('branches').doc(copyFrom).get()
           if (src.exists) {
-            const sd = src.data()
+            const sd     = src.data()
             rates        = sd.rates        || rates
             driveInRates = sd.driveInRates || driveInRates
-            settings     = { ...sd.settings, hasDriveIn }
+            settings     = { ...sd.settings, hasDriveIn, allowedIPs }
           }
         }
 
@@ -145,7 +203,7 @@ export function Branches() {
   async function deleteBranch(b) {
     if (!confirm(`Delete branch "${b.name}"?\n\nAll rates, history and settings will be permanently removed.`)) return
     try {
-      const hist = await db.collection('branches').doc(b.id).collection('rateHistory').get()
+      const hist  = await db.collection('branches').doc(b.id).collection('rateHistory').get()
       const batch = db.batch()
       hist.docs.forEach(d => batch.delete(d.ref))
       batch.delete(db.collection('branches').doc(b.id))
@@ -181,9 +239,17 @@ export function Branches() {
               <div key={b.id} className="item-card">
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
                   <h3>🏢 {b.name || b.id}</h3>
-                  {b.settings?.hasDriveIn && (
-                    <span style={{ background:'#e8f4fd', color:'#1a6fa0', borderRadius:8, padding:'2px 7px', fontSize:'0.7rem', fontWeight:800 }}>🚗 DRIVE-IN</span>
-                  )}
+                  <div style={{ display:'flex', gap:5, flexWrap:'wrap', justifyContent:'flex-end' }}>
+                    {b.settings?.hasDriveIn && (
+                      <span style={{ background:'#e8f4fd', color:'#1a6fa0', borderRadius:8, padding:'2px 7px', fontSize:'0.7rem', fontWeight:800 }}>🚗 DRIVE-IN</span>
+                    )}
+                    {/* IP lock badge */}
+                    {(b.settings?.allowedIPs?.length > 0) && (
+                      <span style={{ background:'#fef3e2', color:'#b45309', borderRadius:8, padding:'2px 7px', fontSize:'0.7rem', fontWeight:800 }}>
+                        🔒 {b.settings.allowedIPs.length} IP{b.settings.allowedIPs.length > 1 ? 's' : ''}
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <p>{b.location || 'No location set'}</p>
                 <p style={{ marginTop:5, color:'#888', fontSize:'0.76rem' }}>ID: <code>{b.id}</code></p>
@@ -254,6 +320,95 @@ export function Branches() {
           </label>
           <small>Enables separate Drive-In room types and rates, plus a Drive-In toggle button on the kiosk.</small>
         </div>
+
+        {/* ── IP Whitelist Section ─────────────────────────────────────────── */}
+        <div className="form-group">
+          <label style={{ display:'flex', alignItems:'center', gap:6 }}>
+            🔒 Kiosk IP Whitelist
+            <span style={{
+              background: allowedIPs.length > 0 ? '#fef3e2' : '#f0f0f0',
+              color:      allowedIPs.length > 0 ? '#b45309' : '#888',
+              borderRadius: 10, padding:'1px 8px', fontSize:'0.68rem', fontWeight:700,
+            }}>
+              {allowedIPs.length === 0 ? 'OPEN ACCESS' : `${allowedIPs.length} IP${allowedIPs.length > 1 ? 's' : ''}`}
+            </span>
+          </label>
+          <small style={{ display:'block', marginBottom:8 }}>
+            Only devices whose IP is in this list can view the kiosk.
+            Leave empty to allow access from any IP.
+          </small>
+
+          {/* Existing IPs list */}
+          {allowedIPs.length > 0 && (
+            <div style={{
+              border:'1px solid #e2e8f0', borderRadius:8,
+              overflow:'hidden', marginBottom:8,
+            }}>
+              {allowedIPs.map((ip, idx) => (
+                <div key={ip} style={{
+                  display:'flex', alignItems:'center', justifyContent:'space-between',
+                  padding:'7px 12px',
+                  background: idx % 2 === 0 ? '#fafbfc' : '#fff',
+                  borderBottom: idx < allowedIPs.length - 1 ? '1px solid #e2e8f0' : 'none',
+                }}>
+                  <span style={{ fontFamily:'monospace', fontSize:'0.88rem', color:'#2d3748', fontWeight:600 }}>
+                    {ip}
+                  </span>
+                  <button
+                    onClick={() => removeIP(ip)}
+                    style={{
+                      background:'none', border:'none', cursor:'pointer',
+                      color:'#e53e3e', fontWeight:700, fontSize:'0.8rem',
+                      padding:'2px 6px', borderRadius:4,
+                    }}
+                    title="Remove IP"
+                  >
+                    ✕ Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Add IP input row */}
+          <div style={{ display:'flex', gap:6 }}>
+            <input
+              type="text"
+              placeholder="e.g. 192.168.1.10"
+              value={ipInput}
+              onChange={e => { setIpInput(e.target.value); setIpError('') }}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addIP() } }}
+              style={{ flex:1, fontFamily:'monospace' }}
+            />
+            <button
+              className="btn btn-outline"
+              style={{ whiteSpace:'nowrap', fontSize:'0.82rem' }}
+              onClick={addIP}
+              type="button"
+            >
+              + Add IP
+            </button>
+            <button
+              className="btn btn-outline"
+              style={{ whiteSpace:'nowrap', fontSize:'0.82rem' }}
+              onClick={useMyIP}
+              disabled={fetchingIP}
+              title="Detect and fill in your current public IP"
+              type="button"
+            >
+              {fetchingIP ? '…' : '📡 My IP'}
+            </button>
+          </div>
+          {ipError && (
+            <small style={{ color:'#e53e3e', marginTop:4, display:'block' }}>{ipError}</small>
+          )}
+          <small style={{ marginTop:4, display:'block', color:'#a0aec0' }}>
+            💡 Tip: For devices behind a router, use <strong>📡 My IP</strong> to get the public IP,
+            or enter the local IP (e.g. 192.168.x.x) if you're on the same LAN.
+          </small>
+        </div>
+        {/* ──────────────────────────────────────────────────────────────────── */}
+
         {!editId && (
           <div className="form-group">
             <label>Copy rates from branch (optional)</label>

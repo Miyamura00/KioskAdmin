@@ -49,6 +49,57 @@ function getCategory(now, settings, holidays, branchId) {
 function displaySlotName(key) { return key.replace(/_\d+$/, '') }
 function fmtVal(v) { const n = Number(v); return !n ? '-' : n.toString() }
 
+/** Fetch the device's public IP via ipify */
+async function getPublicIP() {
+  try {
+    const res = await fetch('https://api.ipify.org?format=json')
+    const { ip } = await res.json()
+    return ip || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Gather local/LAN IPs via WebRTC candidate leak.
+ * Works even behind NAT — returns e.g. ['192.168.1.5'].
+ */
+function getLocalIPs() {
+  return new Promise(resolve => {
+    const ips = new Set()
+    let pc
+    try {
+      pc = new RTCPeerConnection({ iceServers: [] })
+      pc.createDataChannel('')
+      pc.createOffer()
+        .then(offer => pc.setLocalDescription(offer))
+        .catch(() => resolve([]))
+      pc.onicecandidate = e => {
+        if (!e || !e.candidate) {
+          pc.close()
+          resolve([...ips])
+          return
+        }
+        const match = /([0-9]{1,3}\.){3}[0-9]{1,3}/.exec(e.candidate.candidate)
+        if (match) ips.add(match[0])
+      }
+    } catch {
+      resolve([])
+      return
+    }
+    // Fallback timeout — resolve after 2 s regardless
+    setTimeout(() => { try { pc?.close() } catch {} resolve([...ips]) }, 2000)
+  })
+}
+
+/** Returns all IPs detected on this device (public + local). */
+async function detectAllIPs() {
+  const [publicIP, localIPs] = await Promise.all([getPublicIP(), getLocalIPs()])
+  const all = new Set(localIPs)
+  if (publicIP) all.add(publicIP)
+  return [...all]
+}
+
 function RateTable({ label, rates, slots, roomTypes, now, schedules, cat, disabledSlots }) {
   const active = (slots || []).filter(s =>
     isSlotActive(s, cat, schedules, now) &&
@@ -97,6 +148,73 @@ function RateTable({ label, rates, slots, roomTypes, now, schedules, cat, disabl
   )
 }
 
+/** Shown when this device's IP is not in the branch whitelist */
+function AccessDenied({ detectedIPs }) {
+  return (
+    <div style={{
+      position: 'fixed', inset: 0,
+      background: 'linear-gradient(135deg, #1a0000 0%, #3d0000 50%, #1a0000 100%)',
+      display: 'flex', flexDirection: 'column',
+      alignItems: 'center', justifyContent: 'center',
+      zIndex: 9999, gap: 24, padding: 40,
+    }}>
+      {/* Animated warning ring */}
+      <div style={{
+        width: 120, height: 120, borderRadius: '50%',
+        border: '4px solid #f3d000',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: 56,
+        animation: 'pulse-ring 2s ease-in-out infinite',
+        boxShadow: '0 0 30px rgba(243,208,0,0.3)',
+      }}>
+        🔒
+      </div>
+
+      <div style={{ textAlign: 'center', maxWidth: 520 }}>
+        <div style={{
+          color: '#f3d000', fontSize: '2.2rem', fontWeight: 900,
+          letterSpacing: '0.12em', marginBottom: 10,
+          textShadow: '0 0 20px rgba(243,208,0,0.5)',
+        }}>
+          ACCESS RESTRICTED
+        </div>
+        <div style={{
+          color: 'rgba(255,255,255,0.7)', fontSize: '1rem',
+          lineHeight: 1.6, marginBottom: 28,
+        }}>
+          This kiosk is not authorized for your current network location.
+          Please contact your system administrator.
+        </div>
+
+        {detectedIPs.length > 0 && (
+          <div style={{
+            background: 'rgba(243,208,0,0.07)',
+            border: '1px solid rgba(243,208,0,0.25)',
+            borderRadius: 10, padding: '12px 20px',
+            display: 'inline-block',
+          }}>
+            <div style={{ color: 'rgba(255,255,255,0.45)', fontSize: '0.7rem', marginBottom: 6, letterSpacing: '0.1em' }}>
+              DETECTED IP{detectedIPs.length > 1 ? 'S' : ''}
+            </div>
+            {detectedIPs.map(ip => (
+              <div key={ip} style={{ color: '#f3d000', fontFamily: 'monospace', fontSize: '1rem', fontWeight: 700 }}>
+                {ip}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <style>{`
+        @keyframes pulse-ring {
+          0%, 100% { transform: scale(1); box-shadow: 0 0 30px rgba(243,208,0,0.3); }
+          50%       { transform: scale(1.07); box-shadow: 0 0 50px rgba(243,208,0,0.55); }
+        }
+      `}</style>
+    </div>
+  )
+}
+
 export function Kiosk() {
   const params   = new URLSearchParams(window.location.search)
   const branchId = params.get('branch') || 'default'
@@ -108,7 +226,20 @@ export function Kiosk() {
   const [opacity,    setOpacity]    = useState(0)
   const [mode,       setMode]       = useState('walkin')
 
+  // IP access control
+  const [detectedIPs,  setDetectedIPs]  = useState([])
+  const [accessChecked, setAccessChecked] = useState(false)
+  const [isBlocked,    setIsBlocked]    = useState(false)
+
   useEffect(() => { const id = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(id) }, [])
+
+  // Detect IPs once on mount
+  useEffect(() => {
+    detectAllIPs().then(ips => {
+      setDetectedIPs(ips)
+      setAccessChecked(true)
+    })
+  }, [])
 
   useEffect(() => {
     const unsub = db.collection('branches').doc(branchId).onSnapshot(snap => {
@@ -127,6 +258,16 @@ export function Kiosk() {
     return unsub
   }, [])
 
+  // Check IP against whitelist whenever branch data or detected IPs change
+  useEffect(() => {
+    if (!accessChecked || !branchData) return
+    const allowedIPs = branchData.settings?.allowedIPs || []
+    // Empty whitelist = no restriction
+    if (allowedIPs.length === 0) { setIsBlocked(false); return }
+    const blocked = !detectedIPs.some(ip => allowedIPs.includes(ip))
+    setIsBlocked(blocked)
+  }, [accessChecked, branchData, detectedIPs])
+
   const settings   = branchData?.settings || {}
   const hasDriveIn = settings.hasDriveIn === true
   const cat        = branchData ? getCategory(now, settings, globalHols, branchId) : 'weekday'
@@ -139,7 +280,6 @@ export function Kiosk() {
   const diTimeSlots = settings.driveInTimeSlots?.[cat] || []
   const diRates     = branchData?.driveInRates?.[cat]  || {}
 
-  // displayMode = what is currently SHOWN on screen
   const displayMode = (!hasDriveIn || mode === 'walkin') ? 'walkin' : 'drivein'
   const modeTitle   = displayMode === 'walkin' ? 'WALK-IN ROOM RATES' : 'DRIVE-IN ROOM RATES'
   const hideCatLabel = settings.hideCatLabel === true
@@ -150,16 +290,17 @@ export function Kiosk() {
   const dateStr = now.toLocaleDateString('en-US', { weekday:'long', year:'numeric', month:'long', day:'numeric' })
   const timeStr = now.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true })
 
+  // Show blocked screen (rendered on top of everything)
+  if (isBlocked) return <AccessDenied detectedIPs={detectedIPs} />
+
   return (
     <div className="kiosk-root" 
     onClick={document.addEventListener("click", function () {
         if (!document.fullscreenElement) {
-          // If not in fullscreen, enter fullscreen mode
           document.documentElement.requestFullscreen().catch((err) => {
             console.log(`Error: ${err.message}`)
           })
         }
-        // If already in fullscreen, do nothing
       })}>
       {!loaded && (
         <div className="loading-screen">
@@ -208,7 +349,6 @@ export function Kiosk() {
                 title={displayMode === 'walkin' ? 'Switch to Drive-In' : 'Switch to Walk-In'}
                 style={displayMode === 'drivein' ? { background:'#f3d000', color:'#7a0000', borderColor:'#fff' } : {}}
               >
-                {/* Shows current mode — click to switch */}
                 <span className="di-icon">{displayMode === 'drivein' ? '🚗' : '🚶'}</span>
                 {displayMode === 'drivein'
                   ? <><span className="di-label">DRIVE</span><span className="di-label">IN</span></>
